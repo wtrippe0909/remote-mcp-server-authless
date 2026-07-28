@@ -57,6 +57,55 @@ export class MyMCP extends McpAgent {
 				return { content: [{ type: "text", text: String(result) }] };
 			},
 		);
+
+		// Custom greeting tool
+		this.server.registerTool(
+			"greet",
+			{
+				inputSchema: {
+					name: z.string().describe("The name of the person to greet"),
+				},
+			},
+			async ({ name }) => ({
+				content: [{ type: "text", text: `Hello, ${name}! This is your custom MCP tool running on Cloudflare.` }],
+			}),
+		);
+	}
+}
+
+export default {
+	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		const url = new URL(request.url);
+
+		if (url.pathname === "/mcp") {
+			return MyMCP.serve("/mcp").fetch(request, env, ctx);
+		}
+
+		return new Response("Not found", { status: 404 });
+	},
+};						break;
+					case "subtract":
+						result = a - b;
+						break;
+					case "multiply":
+						result = a * b;
+						break;
+					case "divide":
+						if (b === 0)
+							return {
+								content: [
+									{
+										type: "text",
+										text: "Error: Cannot divide by zero",
+									},
+								],
+							};
+						result = a / b;
+						break;
+				}
+				return { content: [{ type: "text", text: String(result) }] };
+			},
+		);
 	}
 }
 
