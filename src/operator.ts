@@ -180,6 +180,8 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 		const owner =
 			this.env.OWNER_MEMBER_ID || (await this.ctx.storage.get<string>("ownerMemberId"));
 		const sentIds = new Set((await this.ctx.storage.get<string[]>("sentIds")) ?? []);
+		const botMessageIds = new Set(sentIds);
+		for (const m of messages) if (bot.id && m.senderId === bot.id) botMessageIds.add(m.id);
 		const fresh = messages
 			.filter((m) => !seen.has(m.id) && !sentIds.has(m.id))
 			.filter((m) => !bot.id || m.senderId !== bot.id)
@@ -187,7 +189,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			.filter((m) =>
 				isControl
 					? !this.env.OWNER_MEMBER_ID || m.senderId === this.env.OWNER_MEMBER_ID
-					: mentionsBot(m, bot) && (!owner || m.senderId === owner),
+					: mentionsBot(m, bot, botMessageIds) && (!owner || m.senderId === owner),
 			)
 			.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
 
@@ -379,20 +381,29 @@ function storageKeys(topicId: string, isControl: boolean) {
 		: { seen: `seen:${topicId}`, init: `init:${topicId}`, history: `history:${topicId}` };
 }
 
-function mentionsBot(m: ZenzapMessage, bot: BotInfo): boolean {
+/**
+ * True when the message @mentions the bot or replies to one of its messages. Structured mentions
+ * and replies are recognised by a mention/reply-like field that contains the bot's member ID, name,
+ * or the ID of a message the bot sent.
+ */
+function mentionsBot(m: ZenzapMessage, bot: BotInfo, botMessageIds: Set<string>): boolean {
 	const text = m.text.toLowerCase();
 	if (bot.name && text.includes(`@${bot.name.toLowerCase()}`)) return true;
 	if (text.includes("@executive operator")) return true;
-	// Structured mentions (or replies to the bot) carry its member ID in a mention/reply field.
-	return !!bot.id && hasMentionOf(m.raw, bot.id);
+	const needles = [...botMessageIds];
+	if (bot.id) needles.push(bot.id);
+	if (bot.name) needles.push(bot.name);
+	return hasReferenceTo(m.raw, needles);
 }
 
-function hasMentionOf(value: unknown, botId: string, depth = 0): boolean {
+function hasReferenceTo(value: unknown, needles: string[], depth = 0): boolean {
 	if (depth > 4 || typeof value !== "object" || value === null) return false;
 	for (const [key, v] of Object.entries(value)) {
-		if (/mention|reply|quote/i.test(key) && JSON.stringify(v ?? null).includes(botId))
-			return true;
-		if (hasMentionOf(v, botId, depth + 1)) return true;
+		if (/mention|reply|replied|quote|parent|thread|ref/i.test(key)) {
+			const serialized = JSON.stringify(v ?? null);
+			if (needles.some((n) => n && serialized.includes(n))) return true;
+		}
+		if (hasReferenceTo(v, needles, depth + 1)) return true;
 	}
 	return false;
 }
