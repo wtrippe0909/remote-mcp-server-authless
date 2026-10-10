@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { DurableObject } from "cloudflare:workers";
-import { buildMemoryTools, buildOperatorTools } from "./operator-tools";
+import { Ledger } from "./ledger";
+import { buildLedgerTools, buildMemoryTools, buildOperatorTools } from "./operator-tools";
 import { emptyUsage, formatNotes, logUsage, recentNotes } from "./memory";
 import { recordMessageSamples } from "./research";
 import {
@@ -31,6 +32,8 @@ export interface OperatorEnv {
 	ZAPIER_MCP_TOKEN?: string;
 	/** Optional D1 database where Zenzap docs and raw API payloads are saved for inspection. */
 	RESEARCH?: D1Database;
+	/** Member ID of the doctrine's Validator (Custodian); only its messages count as verdicts. */
+	VALIDATOR_MEMBER_ID?: string;
 }
 
 const MODEL = "claude-opus-5-5";
@@ -94,7 +97,35 @@ Orchestration first, your own tools as a fallback:
   don't use them for work an agent can do. If none are listed, you can't reach outside apps in this conversation.
 - Whoever does the work, reading and searching is fine. Anything that sends, writes, moves, shares or deletes
   (an email, a Drive file, a calendar invite, a Notion page) needs the owner's explicit approval for that specific
-  action first; when you assign such work to an agent, say that the owner's approval is required.`;
+  action first; when you assign such work to an agent, say that the owner's approval is required.
+
+Governed work (Executive Operator Doctrine v2.3):
+- Any multi-step deliverable (a document, a build, anything that ends in an external action) is a governed task
+  tracked in the ledger. You coordinate; you never produce the artifact, validate it, or approve it yourself.
+- Separation of powers. Architect: the Executive Architect agent (scope and spec). Builder: the Chief Builder agent
+  (produces the artifact). Validator: the Custodian agent (its verdict is the only one that counts). Supervisor:
+  the owner (approves objectives and every external action). Runtime: the ledger, which is the only source of truth
+  for task state and rejects any move the doctrine forbids. Find each agent's member ID in the member list.
+- Each task has four independent status dimensions: workflow_state, validation_verdict (UNREVIEWED, PASS, FAIL,
+  INCONCLUSIVE), authorization_status (NOT_REQUIRED, PENDING, CONSUMED) and execution_outcome (NOT_STARTED,
+  IN_PROGRESS, SUCCEEDED, FAILED, UNKNOWN). Never report one as another: "built" is not "validated", "validated"
+  is not "approved", "approved" is not "done".
+- Lifecycle: INTAKE -> SPEC_ALIGNMENT (owner approved the objective) -> DISPATCH_READY -> BUILD_ACTIVE ->
+  VALIDATION_PENDING -> on PASS either CLOSEOUT_READY -> COMPLETED, or, when an external action is needed,
+  EXECUTION_PENDING -> EXECUTION_ACTIVE (owner approval) -> POST_EXEC_VALIDATION -> CLOSEOUT_READY -> COMPLETED.
+  FAIL goes to REWORK_ACTIVE (at most 2 reworks, then FAILED). INCONCLUSIVE goes to BLOCKED. An uncertain external
+  result goes to RECONCILIATION_PENDING (at most 3 checks). At most 2 execution attempts.
+- Artifacts are bound by Drive fileId plus headRevisionId (or version). When the Builder reports, get both and
+  record them with the move to VALIDATION_PENDING. Ask the Validator to verify that exact fileId and revision and to
+  answer with exactly one of PASS, FAIL or INCONCLUSIVE, citing both. Pass the ID of the Validator's message as
+  verdict_message_id; the ledger reads that message itself.
+- Approvals are single-use. To start an external action, ask the owner to approve it naming the task ID (e.g.
+  "approve T8-06"), then pass the ID of the owner's message as approval_message_id. A retry needs a fresh approval.
+  The message IDs you can cite are in the [id ...] tags in the conversation.
+- BLOCKED always carries a block_record: cause, what must happen to resolve it, and the state to resume in.
+  Cancelling while an external action is in flight goes through CANCELLATION_PENDING until its outcome is known.
+- If the ledger rejects a move, don't work around it: report its error and reason, and get what it asks for.
+  Report status from ledger_get or ledger_list, never from memory.`;
 
 interface BotInfo {
 	id?: string;
@@ -254,7 +285,8 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			return;
 		}
 
-		let userText = fresh.map((m) => m.text).join("\n\n");
+		// Message IDs are shown so the agent can cite approvals and verdicts to the ledger.
+		let userText = fresh.map((m) => `[id ${m.id}] ${m.text}`).join("\n\n");
 		if (!isControl) {
 			const label = (m: ZenzapMessage) => {
 				if (m.senderId === bot.id) return "You";
@@ -265,7 +297,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			const recent = [...messages]
 				.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
 				.slice(-15)
-				.map((m) => `${label(m)}: ${m.text}`)
+				.map((m) => `[id ${m.id}] ${label(m)}: ${m.text}`)
 				.join("\n\n");
 			const directory = [...memberDirectory(messages, bot, owner)]
 				.map(([id, name]) => `- ${name}: <@${id}>`)
@@ -274,7 +306,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 				`[Group topic "${topicName ?? topicId}" (id ${topicId}). Your reply is posted in this topic.]`,
 				`Members seen in this topic (tag with the code shown):\n${directory}`,
 				`Recent messages:\n${recent}`,
-				`New messages addressed to you:\n${fresh.map((m) => `${label(m)}: ${m.text}`).join("\n\n")}`,
+				`New messages addressed to you:\n${fresh.map((m) => `[id ${m.id}] ${label(m)}: ${m.text}`).join("\n\n")}`,
 			].join("\n\n");
 		}
 
@@ -401,6 +433,18 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			}
 		}
 
+		const validatorId = (this.env.VALIDATOR_MEMBER_ID ?? "").trim();
+		const ledger =
+			db && validatorId
+				? new Ledger(db, this.zenzap, {
+						ownerId:
+							this.env.OWNER_MEMBER_ID ||
+							(await this.ctx.storage.get<string>("ownerMemberId")),
+						validatorId,
+						controlTopicId: this.env.ZENZAP_CONTROL_TOPIC_ID,
+					})
+				: undefined;
+
 		const messages: Anthropic.Beta.BetaMessageParam[] = [
 			...history.map((t) => ({ role: t.role, content: t.text })),
 			{
@@ -434,6 +478,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			tools: [
 				...buildOperatorTools(this.zenzap, sentMessageIds),
 				...(db ? buildMemoryTools(db, topicId) : []),
+				...(ledger ? buildLedgerTools(ledger, topicId) : []),
 				// Zapier exposes hundreds of tools (~680k tokens of definitions). Defer them all and let
 				// the model load only the ones it needs through tool search.
 				...(useZapier

@@ -1,5 +1,6 @@
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
+import { type Ledger, WORKFLOW_STATES } from "./ledger";
 import { addNote, archiveNote, usageSummary } from "./memory";
 import { extractId, type ZenzapClient, ZenzapError } from "./zenzap";
 
@@ -176,6 +177,89 @@ export function buildMemoryTools(db: D1Database, topicId: string) {
 				"Report your real Anthropic API spend per day (tokens and USD at list prices) from your usage log.",
 			inputSchema: z.object({ days: z.number().int().min(1).max(90).optional() }),
 			run: ({ days }) => run(() => usageSummary(db, days ?? 7)),
+		}),
+	];
+}
+
+/**
+ * Doctrine v2.3 task ledger. The agent can only request transitions; the Ledger checks every one
+ * and returns either the updated task or a structured error ({error, current_state, target_state,
+ * reason}).
+ */
+export function buildLedgerTools(ledger: Ledger, topicId: string) {
+	const state = z.enum(WORKFLOW_STATES);
+	return [
+		betaZodTool({
+			name: "ledger_create_task",
+			description:
+				"Open a governed task in the ledger at INTAKE. Use the same ID as its Zenzap task when there is one (e.g. T8-06).",
+			inputSchema: z.object({
+				task_id: z.string(),
+				title: z.string(),
+				objective: z.string().describe("What done looks like, in one or two sentences"),
+			}),
+			run: ({ task_id, title, objective }) =>
+				run(() => ledger.createTask(task_id, title, objective, topicId)),
+		}),
+		betaZodTool({
+			name: "ledger_transition",
+			description: [
+				"Request a workflow_state change for a ledger task. The ledger enforces the doctrine and reads the cited",
+				"Zenzap messages itself; a rejection comes back as {ok:false, error, current_state, target_state, reason}.",
+				"Evidence each move needs: INTAKE->SPEC_ALIGNMENT approval_message_id (an owner message);",
+				"BUILD_ACTIVE or REWORK_ACTIVE->VALIDATION_PENDING artifact_file_id + artifact_revision_id (Drive",
+				"headRevisionId or version); out of VALIDATION_PENDING or POST_EXEC_VALIDATION verdict_message_id (the",
+				"Validator's message citing the fileId and revision with exactly one of PASS/FAIL/INCONCLUSIVE);",
+				"EXECUTION_PENDING->EXECUTION_ACTIVE approval_message_id (an owner message naming the task ID and",
+				"approving it; single use); leaving EXECUTION_ACTIVE or RECONCILIATION_PENDING execution_outcome;",
+				"BLOCKED block_record {cause, resolution_prerequisite, resume_state}.",
+			].join(" "),
+			inputSchema: z.object({
+				task_id: z.string(),
+				to_state: state,
+				approval_message_id: z.string().optional(),
+				verdict_message_id: z.string().optional(),
+				artifact_file_id: z.string().optional(),
+				artifact_revision_id: z.string().optional(),
+				execution_outcome: z.enum(["SUCCEEDED", "FAILED", "UNKNOWN"]).optional(),
+				block_record: z
+					.object({
+						cause: z.string(),
+						resolution_prerequisite: z.string(),
+						resume_state: state,
+					})
+					.optional(),
+				note: z
+					.string()
+					.optional()
+					.describe("Receipt, reason or context for the audit log"),
+			}),
+			run: (req) => run(() => ledger.requestTransition(req)),
+		}),
+		betaZodTool({
+			name: "ledger_get",
+			description:
+				"Get one ledger task with its four status dimensions, counters and artifact binding.",
+			inputSchema: z.object({ task_id: z.string() }),
+			run: ({ task_id }) =>
+				run(
+					async () =>
+						(await ledger.getTask(task_id)) ?? { error: "UNKNOWN_TASK", task_id },
+				),
+		}),
+		betaZodTool({
+			name: "ledger_list",
+			description:
+				"List ledger tasks, newest activity first. Open tasks only unless include_closed is true.",
+			inputSchema: z.object({ include_closed: z.boolean().optional() }),
+			run: ({ include_closed }) => run(() => ledger.listTasks(include_closed ?? false)),
+		}),
+		betaZodTool({
+			name: "ledger_history",
+			description:
+				"The audit log of one task: every requested transition, accepted or rejected, with reasons.",
+			inputSchema: z.object({ task_id: z.string() }),
+			run: ({ task_id }) => run(() => ledger.history(task_id)),
 		}),
 	];
 }
