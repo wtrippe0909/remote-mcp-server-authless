@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import type { OperatorEnv } from "./operator";
+import { runResearch } from "./research";
 
 export { ExecutiveOperator } from "./operator";
 
@@ -70,7 +71,12 @@ export class MyMCP extends McpAgent {
 				},
 			},
 			async ({ name }) => ({
-				content: [{ type: "text", text: `Hello, ${name}! This is your custom MCP tool running on Cloudflare.` }],
+				content: [
+					{
+						type: "text",
+						text: `Hello, ${name}! This is your custom MCP tool running on Cloudflare.`,
+					},
+				],
 			}),
 		);
 	}
@@ -88,8 +94,13 @@ export default {
 	},
 
 	// Cron watchdog: keeps the Executive Operator's polling alarm alive.
-	async scheduled(_controller: ScheduledController, env: Env & OperatorEnv, _ctx: ExecutionContext) {
+	async scheduled(
+		_controller: ScheduledController,
+		env: Env & OperatorEnv,
+		ctx: ExecutionContext,
+	) {
 		const stub = env.OPERATOR.get(env.OPERATOR.idFromName("executive-operator"));
 		await stub.ensurePolling();
+		ctx.waitUntil(runResearch(env).catch((err) => console.error("research sync failed", err)));
 	},
 };
