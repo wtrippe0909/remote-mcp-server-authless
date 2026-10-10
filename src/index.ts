@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
+import type { OperatorEnv } from "./operator";
+
+export { ExecutiveOperator } from "./operator";
 
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
@@ -83,40 +86,10 @@ export default {
 
 		return new Response("Not found", { status: 404 });
 	},
-};						break;
-					case "subtract":
-						result = a - b;
-						break;
-					case "multiply":
-						result = a * b;
-						break;
-					case "divide":
-						if (b === 0)
-							return {
-								content: [
-									{
-										type: "text",
-										text: "Error: Cannot divide by zero",
-									},
-								],
-							};
-						result = a / b;
-						break;
-				}
-				return { content: [{ type: "text", text: String(result) }] };
-			},
-		);
-	}
-}
 
-export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		const url = new URL(request.url);
-
-		if (url.pathname === "/mcp") {
-			return MyMCP.serve("/mcp").fetch(request, env, ctx);
-		}
-
-		return new Response("Not found", { status: 404 });
+	// Cron watchdog: keeps the Executive Operator's polling alarm alive.
+	async scheduled(_controller: ScheduledController, env: Env & OperatorEnv, _ctx: ExecutionContext) {
+		const stub = env.OPERATOR.get(env.OPERATOR.idFromName("executive-operator"));
+		await stub.ensurePolling();
 	},
 };

@@ -13,6 +13,10 @@
 			"new_sqlite_classes": ["MyMCP"],
 			"tag": "v1",
 		},
+		{
+			"new_sqlite_classes": ["ExecutiveOperator"],
+			"tag": "v2",
+		},
 	],
 	"durable_objects": {
 		"bindings": [
@@ -20,7 +24,22 @@
 				"class_name": "MyMCP",
 				"name": "MCP_OBJECT",
 			},
+			{
+				"class_name": "ExecutiveOperator",
+				"name": "OPERATOR",
+			},
 		],
+	},
+	// Executive Operator (Zenzap agent). Secrets are set with `wrangler secret put`:
+	// ZENZAP_API_KEY, ZENZAP_API_SECRET, ANTHROPIC_API_KEY (and optionally OWNER_MEMBER_ID).
+	"vars": {
+		"ZENZAP_BASE_URL": "https://api.us.zenzap.co",
+		"ZENZAP_CONTROL_TOPIC_ID": "c1b54c71-bc8c-4562-b9f6-71b448ab8a97",
+		"POLL_INTERVAL_SECONDS": "15",
+		"AGENT_EFFORT": "medium",
+	},
+	"triggers": {
+		"crons": ["* * * * *"],
 	},
 	"observability": {
 		"enabled": true,
