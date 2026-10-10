@@ -1,5 +1,6 @@
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
+import { addNote, archiveNote, usageSummary } from "./memory";
 import { extractId, type ZenzapClient, ZenzapError } from "./zenzap";
 
 // Tools the Executive Operator can use. Each returns JSON text (or an error
@@ -127,6 +128,54 @@ export function buildOperatorTools(zenzap: ZenzapClient, sentMessageIds: string[
 					}
 					return zenzap.request(method, path, { query, body });
 				}),
+		}),
+	];
+}
+
+/** Shared-notebook and cost tools; only offered when the RESEARCH database is bound. */
+export function buildMemoryTools(db: D1Database, topicId: string) {
+	return [
+		betaZodTool({
+			name: "memory_remember",
+			description: [
+				"Save a note to your shared notebook, which you see in every chat (private and group) on every turn.",
+				"Save anything you'll need later: the owner's decisions and rulings, preferences, who owns which tool,",
+				"task/topic/file IDs you looked up, and open items. One fact per note, written so it stands on its own.",
+			].join(" "),
+			inputSchema: z.object({ note: z.string().min(1).max(2000) }),
+			run: ({ note }) =>
+				run(async () => ({
+					saved: await addNote(db, note, "executive-operator", topicId),
+				})),
+		}),
+		betaZodTool({
+			name: "memory_forget",
+			description:
+				"Archive a notebook note that is wrong or no longer true, by its #id. Save a corrected note if needed.",
+			inputSchema: z.object({ id: z.number().int().positive() }),
+			run: ({ id }) => run(async () => ({ archived: await archiveNote(db, id) })),
+		}),
+		betaZodTool({
+			name: "memory_export",
+			description:
+				"Return the full notebook, including archived notes, when the owner asks to see or export it.",
+			inputSchema: z.object({}),
+			run: () =>
+				run(async () => {
+					const { results } = await db
+						.prepare(
+							"SELECT id, created_at, author, note, archived FROM memory_notes ORDER BY id",
+						)
+						.all();
+					return results;
+				}),
+		}),
+		betaZodTool({
+			name: "usage_report",
+			description:
+				"Report your real Anthropic API spend per day (tokens and USD at list prices) from your usage log.",
+			inputSchema: z.object({ days: z.number().int().min(1).max(90).optional() }),
+			run: ({ days }) => run(() => usageSummary(db, days ?? 7)),
 		}),
 	];
 }
