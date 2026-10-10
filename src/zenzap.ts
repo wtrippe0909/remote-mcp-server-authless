@@ -110,6 +110,7 @@ export interface ZenzapMessage {
 	id: string;
 	text: string;
 	senderId?: string;
+	senderName?: string;
 	createdAt?: number;
 	raw: unknown;
 }
@@ -120,7 +121,16 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 export function extractList(payload: unknown): unknown[] {
 	if (Array.isArray(payload)) return payload;
 	if (!isObj(payload)) return [];
-	for (const key of ["messages", "data", "items", "results", "updates"]) {
+	for (const key of [
+		"messages",
+		"topics",
+		"data",
+		"items",
+		"results",
+		"updates",
+		"members",
+		"tasks",
+	]) {
 		const v = payload[key];
 		if (Array.isArray(v)) return v;
 		if (isObj(v)) {
@@ -160,11 +170,13 @@ export function normalizeMessage(raw: unknown): ZenzapMessage | undefined {
 	if (!text && isObj(raw.content)) text = pickString(raw.content, "text", "body") ?? "";
 
 	let senderId = pickString(raw, "senderId", "authorId", "memberId", "userId", "fromId");
+	let senderName = pickString(raw, "senderName", "authorName", "fromName");
 	for (const key of ["sender", "author", "from", "member", "user"]) {
-		if (senderId) break;
 		const v = raw[key];
-		if (isObj(v)) senderId = pickString(v, "id", "memberId", "userId");
-		else if (typeof v === "string") senderId = v;
+		if (isObj(v)) {
+			senderId ??= pickString(v, "id", "memberId", "userId");
+			senderName ??= pickName(v);
+		} else if (typeof v === "string") senderId ??= v;
 	}
 
 	const created = raw.createdAt ?? raw.created_at ?? raw.timestamp ?? raw.sentAt;
@@ -175,5 +187,20 @@ export function normalizeMessage(raw: unknown): ZenzapMessage | undefined {
 		createdAt = Number.isNaN(parsed) ? Number(created) || undefined : parsed;
 	}
 
-	return { id, text, senderId, createdAt, raw };
+	return { id, text, senderId, senderName, createdAt, raw };
+}
+
+/** Best-effort display name from a member/topic-like object. */
+export function pickName(o: unknown): string | undefined {
+	if (!isObj(o)) return undefined;
+	const direct = pickString(o, "name", "displayName", "fullName", "title");
+	if (direct) return direct;
+	const first = pickString(o, "firstName");
+	const last = pickString(o, "lastName");
+	if (first || last) return [first, last].filter(Boolean).join(" ");
+	for (const key of ["data", "member", "user", "topic"]) {
+		const nested = pickName(o[key]);
+		if (nested) return nested;
+	}
+	return undefined;
 }
