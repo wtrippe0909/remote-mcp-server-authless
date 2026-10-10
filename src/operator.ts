@@ -434,7 +434,21 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 			tools: [
 				...buildOperatorTools(this.zenzap, sentMessageIds),
 				...(db ? buildMemoryTools(db, topicId) : []),
-				...(useZapier ? [{ type: "mcp_toolset" as const, mcp_server_name: "zapier" }] : []),
+				// Zapier exposes hundreds of tools (~680k tokens of definitions). Defer them all and let
+				// the model load only the ones it needs through tool search.
+				...(useZapier
+					? [
+							{
+								type: "mcp_toolset" as const,
+								mcp_server_name: "zapier",
+								default_config: { defer_loading: true },
+							},
+							{
+								type: "tool_search_tool_bm25_20251119" as const,
+								name: "tool_search_tool_bm25" as const,
+							},
+						]
+					: []),
 			],
 			messages,
 		});
