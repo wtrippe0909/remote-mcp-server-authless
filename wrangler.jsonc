@@ -37,6 +37,8 @@
 		"ZENZAP_CONTROL_TOPIC_ID": "c1b54c71-bc8c-4562-b9f6-71b448ab8a97",
 		"POLL_INTERVAL_SECONDS": "15",
 		"AGENT_EFFORT": "medium",
+		// Doctrine v2.3 Validator (Custodian): only its messages count as verdicts in the ledger.
+		"VALIDATOR_MEMBER_ID": "b@e1f282f7-f03f-4ce5-a88d-6d49e499c2a9",
 	},
 	// Zenzap docs and raw API payloads saved for inspection (see src/research.ts).
 	"d1_databases": [
