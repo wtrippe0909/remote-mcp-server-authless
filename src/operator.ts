@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { DurableObject } from "cloudflare:workers";
 import { buildOperatorTools } from "./operator-tools";
+import { recordMessageSamples } from "./research";
 import {
 	extractId,
 	extractList,
@@ -23,6 +24,8 @@ export interface OperatorEnv {
 	POLL_INTERVAL_SECONDS?: string;
 	/** low | medium | high | xhigh | max (default medium). */
 	AGENT_EFFORT?: string;
+	/** Optional D1 database where Zenzap docs and raw API payloads are saved for inspection. */
+	RESEARCH?: D1Database;
 }
 
 const MODEL = "claude-opus-5-5";
@@ -169,6 +172,17 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 
 		const keys = storageKeys(topicId, isControl);
 		const seen = new Set((await this.ctx.storage.get<string[]>(keys.seen)) ?? []);
+
+		// Keep raw payloads for inspection: the recent history once per topic, then new messages.
+		const sampledKey = `sampled:${topicId}`;
+		const sampleAll = !(await this.ctx.storage.get<boolean>(sampledKey));
+		await recordMessageSamples(
+			this.env.RESEARCH,
+			topicId,
+			sampleAll ? messages : messages.filter((m) => !seen.has(m.id)),
+		);
+		if (sampleAll && this.env.RESEARCH) await this.ctx.storage.put(sampledKey, true);
+
 		if (!(await this.ctx.storage.get<boolean>(keys.init))) {
 			// First look at this topic: remember its history instead of replying to it.
 			await this.ctx.storage.put(keys.seen, messages.map((m) => m.id).slice(-MAX_SEEN_IDS));

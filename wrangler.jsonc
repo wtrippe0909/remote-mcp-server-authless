@@ -38,6 +38,14 @@
 		"POLL_INTERVAL_SECONDS": "15",
 		"AGENT_EFFORT": "medium",
 	},
+	// Zenzap docs and raw API payloads saved for inspection (see src/research.ts).
+	"d1_databases": [
+		{
+			"binding": "RESEARCH",
+			"database_name": "executive-operator-research",
+			"database_id": "61ce2e77-3b2a-4e5d-ac19-75a38a857214",
+		},
+	],
 	"triggers": {
 		"crons": ["* * * * *"],
 	},
