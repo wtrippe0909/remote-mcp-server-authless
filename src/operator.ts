@@ -57,8 +57,8 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 	private get zenzap() {
 		return new ZenzapClient({
 			baseUrl: this.env.ZENZAP_BASE_URL,
-			apiKey: this.env.ZENZAP_API_KEY,
-			apiSecret: this.env.ZENZAP_API_SECRET,
+			apiKey: (this.env.ZENZAP_API_KEY ?? "").trim(),
+			apiSecret: (this.env.ZENZAP_API_SECRET ?? "").trim(),
 		});
 	}
 
@@ -154,14 +154,13 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 		const sentMessageIds: string[] = [];
 
 		let reply: string;
+		let failed = false;
 		try {
 			reply = await this.runAgent(history, userText, sentMessageIds);
 		} catch (err) {
 			console.error("agent failed", err);
-			reply =
-				err instanceof Anthropic.APIError
-					? `Sorry, I couldn't process that (AI service error ${err.status}). Please try again shortly.`
-					: "Sorry, something went wrong while handling that request.";
+			failed = true;
+			reply = this.describeAgentError(err);
 		}
 
 		for (const chunk of chunkText(reply, MAX_REPLY_CHARS)) {
@@ -173,6 +172,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 		const sent = (await this.ctx.storage.get<string[]>("sentIds")) ?? [];
 		await this.ctx.storage.put("sentIds", [...sent, ...sentMessageIds].slice(-MAX_SEEN_IDS));
 
+		if (failed) return;
 		const updated: HistoryTurn[] = [
 			...history,
 			{ role: "user", text: userText },
@@ -186,7 +186,9 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 		userText: string,
 		sentMessageIds: string[],
 	): Promise<string> {
-		const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+		const apiKey = this.anthropicKey;
+		if (!apiKey) throw new MissingKeyError();
+		const client = new Anthropic({ apiKey });
 		const effort = (this.env.AGENT_EFFORT ?? "medium") as
 			| "low"
 			| "medium"
@@ -229,10 +231,37 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 		return text || "Done.";
 	}
 
+	private get anthropicKey() {
+		// Strip whitespace and stray quotes that sneak in when pasting into the dashboard.
+		return (this.env.ANTHROPIC_API_KEY ?? "").trim().replace(/^["']|["']$/g, "");
+	}
+
+	private describeAgentError(err: unknown): string {
+		if (err instanceof MissingKeyError) {
+			return "Setup problem: ANTHROPIC_API_KEY isn't set. Add it in Cloudflare under the Worker's Settings → Variables and Secrets.";
+		}
+		if (err instanceof Anthropic.AuthenticationError) {
+			// Only a non-secret fingerprint of the key: its first characters and length.
+			const key = this.anthropicKey;
+			return [
+				"Setup problem: Anthropic rejected the API key (error 401).",
+				`The key Cloudflare has starts with "${key.slice(0, 10)}…" and is ${key.length} characters long.`,
+				'A valid key starts with "sk-ant-api03-" and is about 108 characters long.',
+				"Create a new key at console.anthropic.com → API Keys and paste it into ANTHROPIC_API_KEY.",
+			].join(" ");
+		}
+		if (err instanceof Anthropic.APIError) {
+			return `Sorry, the AI service returned error ${err.status}: ${err.message.slice(0, 300)}`;
+		}
+		return "Sorry, something went wrong while handling that request.";
+	}
+
 	private async saveSeen(seen: Set<string>) {
 		await this.ctx.storage.put("seenIds", [...seen].slice(-MAX_SEEN_IDS));
 	}
 }
+
+class MissingKeyError extends Error {}
 
 function chunkText(text: string, size: number): string[] {
 	if (text.length <= size) return [text];
