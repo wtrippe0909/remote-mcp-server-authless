@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import type { OperatorEnv } from "./operator";
-import { runResearch } from "./research";
 
 export { ExecutiveOperator } from "./operator";
 
@@ -93,14 +92,13 @@ export default {
 		return new Response("Not found", { status: 404 });
 	},
 
-	// Cron watchdog: keeps the Executive Operator's polling alarm alive.
+	// The Zenzap Executive Operator is switched off (owner's decision, 2026-10-11): no polling and no
+	// research sync. To bring it back, restore the cron in wrangler.jsonc and, here:
+	//   await env.OPERATOR.get(env.OPERATOR.idFromName("executive-operator")).ensurePolling();
+	//   ctx.waitUntil(runResearch(env).catch((err) => console.error("research sync failed", err)));
 	async scheduled(
 		_controller: ScheduledController,
-		env: Env & OperatorEnv,
-		ctx: ExecutionContext,
-	) {
-		const stub = env.OPERATOR.get(env.OPERATOR.idFromName("executive-operator"));
-		await stub.ensurePolling();
-		ctx.waitUntil(runResearch(env).catch((err) => console.error("research sync failed", err)));
-	},
+		_env: Env & OperatorEnv,
+		_ctx: ExecutionContext,
+	) {},
 };
