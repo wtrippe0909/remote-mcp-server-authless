@@ -100,7 +100,7 @@ async function toExecution(id: string) {
 	await ok({
 		task_id: id,
 		to_state: "EXECUTION_PENDING",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision R1"),
+		verdict_message_id: validator("for F1 revision R1\nVERDICT: PASS"),
 	});
 	await ok({
 		task_id: id,
@@ -131,7 +131,7 @@ test("happy path: INTAKE to COMPLETED, every accepted move logged OK", async () 
 	await ok({
 		task_id: "H1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision R1"),
+		verdict_message_id: validator("for F1 revision R1\nVERDICT: PASS"),
 	});
 	await ok({ task_id: "H1", to_state: "COMPLETED" });
 	const log = await events("H1");
@@ -155,7 +155,7 @@ test("happy path with an external action: execution, post-exec validation, close
 	await ok({
 		task_id: "H2",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision R1, email sent"),
+		verdict_message_id: validator("for F1 revision R1, email sent\nVERDICT: PASS"),
 	});
 	await ok({ task_id: "H2", to_state: "COMPLETED" });
 });
@@ -319,7 +319,7 @@ test("4. an execution approval for another task doesn't start this one", async (
 	await ok({
 		task_id: "E1",
 		to_state: "EXECUTION_PENDING",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision R1"),
+		verdict_message_id: validator("for F1 revision R1\nVERDICT: PASS"),
 	});
 	const forE10 = owner("approve E10");
 	await rejected({ task_id: "E1", to_state: "EXECUTION_ACTIVE", approval_message_id: forE10 });
@@ -348,6 +348,17 @@ test("5. a negated verdict word is not a PASS", async () => {
 		to_state: "CLOSEOUT_READY",
 		verdict_message_id: validator("F1 R1 isn't a PASS"),
 	});
+	// Bare verdict words never count, negated or not; only a VERDICT line does.
+	await rejected({
+		task_id: "V1",
+		to_state: "CLOSEOUT_READY",
+		verdict_message_id: validator("PASS for F1 R1"),
+	});
+	await rejected({
+		task_id: "V1",
+		to_state: "CLOSEOUT_READY",
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS not met"),
+	});
 	// A VERDICT line is authoritative even when the prose mentions other words.
 	const t = await ok({
 		task_id: "V1",
@@ -373,17 +384,17 @@ test("6. revision and fileId match whole", async () => {
 	await rejected({
 		task_id: "W1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision 10"),
+		verdict_message_id: validator("for F1 revision 10\nVERDICT: PASS"),
 	});
 	await rejected({
 		task_id: "W1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS for F12 revision 1"),
+		verdict_message_id: validator("for F12 revision 1\nVERDICT: PASS"),
 	});
 	await ok({
 		task_id: "W1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS for F1 revision 1."),
+		verdict_message_id: validator("for F1 revision 1.\nVERDICT: PASS"),
 	});
 });
 
@@ -394,14 +405,14 @@ test("7. blocking on an INCONCLUSIVE verdict records it", async () => {
 	await rejected({
 		task_id: "I1",
 		to_state: "BLOCKED",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 		block_record: {
 			cause: "x",
 			resolution_prerequisite: "y",
 			resume_state: "VALIDATION_PENDING",
 		},
 	});
-	const vm = validator("VERDICT: INCONCLUSIVE, can't open F1 R1");
+	const vm = validator("can't open F1 R1\nVERDICT: INCONCLUSIVE");
 	const t = await ok({
 		task_id: "I1",
 		to_state: "BLOCKED",
@@ -424,12 +435,12 @@ test("8. a task that needs an external action can't close out straight from PASS
 	await rejected({
 		task_id: "N1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 	});
 	await ok({
 		task_id: "N1",
 		to_state: "EXECUTION_PENDING",
-		verdict_message_id: validator("VERDICT: PASS F1 R1 again"),
+		verdict_message_id: validator("F1 R1 again\nVERDICT: PASS"),
 	});
 });
 
@@ -465,7 +476,7 @@ test("9. a long note still stores valid JSON and later verdict checks work", asy
 	await ok({
 		task_id: "L1",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 	});
 });
 
@@ -479,7 +490,7 @@ test("9. an old row with truncated JSON doesn't break the verdict-reuse check", 
 	await ok({
 		task_id: "L2",
 		to_state: "CLOSEOUT_READY",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 	});
 });
 
@@ -490,7 +501,7 @@ test("10. a task that changed mid-request writes nothing and keeps the approval"
 	await ok({
 		task_id: "S1",
 		to_state: "EXECUTION_PENDING",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 	});
 	// The approval comes from the Zenzap API; while the ledger waits on it, the task moves on.
 	remote.set("remote-approval", {
@@ -532,7 +543,7 @@ test("10. an approval is single-use, including one first used at intake", async 
 	await ok({
 		task_id: "U1",
 		to_state: "EXECUTION_PENDING",
-		verdict_message_id: validator("VERDICT: PASS F1 R1"),
+		verdict_message_id: validator("F1 R1\nVERDICT: PASS"),
 	});
 	await rejected(
 		{ task_id: "U1", to_state: "EXECUTION_ACTIVE", approval_message_id: approval },
@@ -563,20 +574,21 @@ test("containsExactId: whole identifier, case-sensitive, trailing dot allowed", 
 	assert.equal(containsExactId("approve T1x5", "T1.5"), false);
 });
 
-test("parseVerdict: VERDICT line wins, bare words must be single and not negated", () => {
+test("parseVerdict: exactly one VERDICT line holding only the verdict", () => {
 	const v = (t: string) => {
 		const r = parseVerdict(t);
 		return r.ok ? r.verdict : "REJECTED";
 	};
 	assert.equal(v("VERDICT: PASS"), "PASS");
+	assert.equal(v("F1 R1\nVERDICT: PASS."), "PASS");
 	assert.equal(v("**VERDICT:** fail\nnotes"), "FAIL");
 	assert.equal(v("Checked F1.\nVerdict: INCONCLUSIVE"), "INCONCLUSIVE");
-	assert.equal(v("PASS for F1 R1"), "PASS");
-	assert.equal(v("Not PASS"), "REJECTED");
-	assert.equal(v("never PASS"), "REJECTED");
-	assert.equal(v("it doesn't PASS"), "REJECTED");
-	assert.equal(v("non-PASS"), "REJECTED");
-	assert.equal(v("PASS, but also FAIL on item 2"), "REJECTED");
-	assert.equal(v("PASS PASS"), "REJECTED");
+	assert.equal(v("> VERDICT: **PASS**"), "PASS");
+	assert.equal(v("PASS for F1 R1"), "REJECTED");
+	assert.equal(v("VERDICT: PASS not met"), "REJECTED");
+	assert.equal(v("VERDICT: PASS? no"), "REJECTED");
+	assert.equal(v("VERDICT: not PASS"), "REJECTED");
+	assert.equal(v("VERDICT: PASS\nVERDICT: PASS"), "REJECTED");
+	assert.equal(v("No verdict yet; PASS pending"), "REJECTED");
 	assert.equal(v("looks fine"), "REJECTED");
 });

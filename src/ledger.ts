@@ -57,45 +57,29 @@ const REFUSAL_WORDS =
 type Verdict = "PASS" | "FAIL" | "INCONCLUSIVE";
 
 /**
- * Reads a Validator verdict. A line "VERDICT: PASS|FAIL|INCONCLUSIVE" is authoritative and must be
- * the only such line. Without one, the message must contain exactly one bare verdict word that
- * isn't negated ("not PASS", "non-PASS", "isn't a PASS", "never PASS").
+ * Reads a Validator verdict. The message must have exactly one line "VERDICT: PASS", "VERDICT: FAIL"
+ * or "VERDICT: INCONCLUSIVE", holding nothing but the verdict (markdown and a final full stop are
+ * fine); the fileId and revision go on other lines. Bare verdict words in prose never count, so
+ * "not PASS", "PASS not met" or "PASS? no" can't be read as a pass.
  */
 export function parseVerdict(
 	text: string,
 ): { ok: true; verdict: Verdict } | { ok: false; reason: string } {
-	const lines = [
-		...text.matchAll(/^[ \t*_>-]*VERDICT[ \t*_]*:[ \t*_]*(PASS|FAIL|INCONCLUSIVE)\b/gim),
-	];
+	const lines = [...text.matchAll(/^[ \t*_>`-]*VERDICT[ \t*_`]*:(.*)$/gim)];
+	if (lines.length === 0)
+		return {
+			ok: false,
+			reason: 'The Validator must answer with a line "VERDICT: PASS", "VERDICT: FAIL" or "VERDICT: INCONCLUSIVE".',
+		};
 	if (lines.length > 1)
 		return { ok: false, reason: "The verdict message has more than one VERDICT line." };
-	if (lines.length === 1) return { ok: true, verdict: lines[0][1].toUpperCase() as Verdict };
-
-	const hits = [...text.matchAll(/\b(PASS|FAIL|INCONCLUSIVE)\b/g)];
-	const kinds = [...new Set(hits.map((h) => h[1]))];
-	if (hits.length !== 1) {
+	const value = lines[0][1].replace(/^[\s*_`]+|[\s*_`.]+$/g, "").toUpperCase();
+	if (value !== "PASS" && value !== "FAIL" && value !== "INCONCLUSIVE")
 		return {
 			ok: false,
-			reason: `The verdict message must contain a "VERDICT: PASS|FAIL|INCONCLUSIVE" line or exactly one verdict word (found: ${kinds.join(", ") || "none"}).`,
+			reason: `The VERDICT line must hold only PASS, FAIL or INCONCLUSIVE (found "${lines[0][1].trim().slice(0, 80)}").`,
 		};
-	}
-	const before = text.slice(0, hits[0].index).split("\n").pop() ?? "";
-	if (isNegated(before))
-		return {
-			ok: false,
-			reason: `The verdict word ${hits[0][1]} is negated; ask for "VERDICT: ..."`,
-		};
-	return { ok: true, verdict: hits[0][1] as Verdict };
-}
-
-function isNegated(before: string): boolean {
-	if (/\bnon[ -]?$/i.test(before)) return true;
-	return before
-		.split(/\s+/)
-		.filter(Boolean)
-		.slice(-3)
-		.map((w) => w.replace(/[^A-Za-z'’]/g, ""))
-		.some((w) => /^(not|no|never|without|cannot)$/i.test(w) || /n['’]t$/i.test(w));
+	return { ok: true, verdict: value };
 }
 
 /** Audit-log copy of a request: every string clipped, and always valid JSON under 4000 chars. */

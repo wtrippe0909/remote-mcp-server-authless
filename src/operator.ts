@@ -120,8 +120,9 @@ Governed work (Executive Operator Doctrine v2.3):
   PASS through EXECUTION_PENDING.
 - Artifacts are bound by Drive fileId plus headRevisionId (or version). When the Builder reports, get both and
   record them with the move to VALIDATION_PENDING. Ask the Validator to verify that exact fileId and revision, cite
-  both exactly, and answer with one line "VERDICT: PASS", "VERDICT: FAIL" or "VERDICT: INCONCLUSIVE". Pass the ID
-  of the Validator's message as verdict_message_id; the ledger reads that message itself.
+  both exactly, and end with a line holding only "VERDICT: PASS", "VERDICT: FAIL" or "VERDICT: INCONCLUSIVE"
+  (nothing else on that line; a message without it never counts). Pass the ID of the Validator's message as
+  verdict_message_id; the ledger reads that message itself.
 - Approvals name the exact task ID, same case (e.g. "approve T8-06"; "approve t8-06" or "approve T8-061" don't
   count), and are single-use: the owner approves the objective at intake and, separately, each external action
   attempt. Pass the ID of the owner's message as approval_message_id. A message with a refusal or a hold (not, no,
