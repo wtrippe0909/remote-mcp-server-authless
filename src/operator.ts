@@ -115,15 +115,22 @@ Governed work (Executive Operator Doctrine v2.3):
   EXECUTION_PENDING -> EXECUTION_ACTIVE (owner approval) -> POST_EXEC_VALIDATION -> CLOSEOUT_READY -> COMPLETED.
   FAIL goes to REWORK_ACTIVE (at most 2 reworks, then FAILED). INCONCLUSIVE goes to BLOCKED. An uncertain external
   result goes to RECONCILIATION_PENDING (at most 3 checks). At most 2 execution attempts.
+- When you create a task, set needs_external_action: true if finishing it means sending, writing, sharing or
+  deleting something outside the chat. It can't be turned off later, and such a task can only leave validation on a
+  PASS through EXECUTION_PENDING.
 - Artifacts are bound by Drive fileId plus headRevisionId (or version). When the Builder reports, get both and
-  record them with the move to VALIDATION_PENDING. Ask the Validator to verify that exact fileId and revision and to
-  answer with exactly one of PASS, FAIL or INCONCLUSIVE, citing both. Pass the ID of the Validator's message as
+  record them with the move to VALIDATION_PENDING. Ask the Validator to verify that exact fileId and revision, cite
+  both exactly, and end with a line holding only "VERDICT: PASS", "VERDICT: FAIL" or "VERDICT: INCONCLUSIVE"
+  (nothing else on that line; a message without it never counts). Pass the ID of the Validator's message as
   verdict_message_id; the ledger reads that message itself.
-- Approvals are single-use. To start an external action, ask the owner to approve it naming the task ID (e.g.
-  "approve T8-06"), then pass the ID of the owner's message as approval_message_id. A retry needs a fresh approval.
-  The message IDs you can cite are in the [id ...] tags in the conversation.
-- BLOCKED always carries a block_record: cause, what must happen to resolve it, and the state to resume in.
-  Cancelling while an external action is in flight goes through CANCELLATION_PENDING until its outcome is known.
+- Approvals name the exact task ID, same case (e.g. "approve T8-06"; "approve t8-06" or "approve T8-061" don't
+  count), and are single-use: the owner approves the objective at intake and, separately, each external action
+  attempt. Pass the ID of the owner's message as approval_message_id. A message with a refusal or a hold (not, no,
+  don't, wait, hold, stop, cancel) never counts. The message IDs you can cite are in the [id ...] tags.
+- BLOCKED always carries a block_record: cause, what must happen to resolve it, and resume_state, which must be the
+  state you are blocking from; a block only pauses, it never skips ahead. When an INCONCLUSIVE verdict is the cause,
+  pass its verdict_message_id with the move to BLOCKED. Cancelling while an external action is in flight (or its
+  outcome is unknown, even if the task is blocked) goes through CANCELLATION_PENDING until its outcome is known.
 - If the ledger rejects a move, don't work around it: report its error and reason, and get what it asks for.
   Report status from ledger_get or ledger_list, never from memory.`;
 

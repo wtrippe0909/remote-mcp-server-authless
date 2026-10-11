@@ -197,22 +197,34 @@ export function buildLedgerTools(ledger: Ledger, topicId: string) {
 				task_id: z.string(),
 				title: z.string(),
 				objective: z.string().describe("What done looks like, in one or two sentences"),
+				needs_external_action: z
+					.boolean()
+					.describe(
+						"True if finishing the task means sending, writing, sharing or deleting something outside the chat (an email, a Drive file, a calendar invite). Once true it can't be turned off, and the task must go through owner-approved execution.",
+					),
 			}),
-			run: ({ task_id, title, objective }) =>
-				run(() => ledger.createTask(task_id, title, objective, topicId)),
+			run: ({ task_id, title, objective, needs_external_action }) =>
+				run(() =>
+					ledger.createTask(task_id, title, objective, topicId, needs_external_action),
+				),
 		}),
 		betaZodTool({
 			name: "ledger_transition",
 			description: [
 				"Request a workflow_state change for a ledger task. The ledger enforces the doctrine and reads the cited",
 				"Zenzap messages itself; a rejection comes back as {ok:false, error, current_state, target_state, reason}.",
-				"Evidence each move needs: INTAKE->SPEC_ALIGNMENT approval_message_id (an owner message);",
-				"BUILD_ACTIVE or REWORK_ACTIVE->VALIDATION_PENDING artifact_file_id + artifact_revision_id (Drive",
-				"headRevisionId or version); out of VALIDATION_PENDING or POST_EXEC_VALIDATION verdict_message_id (the",
-				"Validator's message citing the fileId and revision with exactly one of PASS/FAIL/INCONCLUSIVE);",
-				"EXECUTION_PENDING->EXECUTION_ACTIVE approval_message_id (an owner message naming the task ID and",
-				"approving it; single use); leaving EXECUTION_ACTIVE or RECONCILIATION_PENDING execution_outcome;",
-				"BLOCKED block_record {cause, resolution_prerequisite, resume_state}.",
+				"Evidence each move needs: INTAKE->SPEC_ALIGNMENT approval_message_id (an owner message naming the",
+				"exact task ID, same case, and approving it, e.g. 'approve T8-06'); BUILD_ACTIVE or",
+				"REWORK_ACTIVE->VALIDATION_PENDING artifact_file_id + artifact_revision_id (Drive headRevisionId or",
+				"version); out of VALIDATION_PENDING or POST_EXEC_VALIDATION verdict_message_id (the Validator's",
+				"message citing the exact fileId and revision, plus one line holding only 'VERDICT: PASS',",
+				"'VERDICT: FAIL' or 'VERDICT: INCONCLUSIVE'); EXECUTION_PENDING->EXECUTION_ACTIVE approval_message_id (a fresh owner",
+				"message naming the exact task ID and approving it; every approval is single use, including the",
+				"intake one); leaving EXECUTION_ACTIVE or RECONCILIATION_PENDING execution_outcome; BLOCKED",
+				"block_record {cause, resolution_prerequisite, resume_state}, where resume_state must equal the",
+				"state you block from (blocking on an INCONCLUSIVE verdict: also pass its verdict_message_id).",
+				"Owner messages with a refusal or hold (not, no, don't, wait, hold, stop, cancel...) never count.",
+				"If a task needs an external action, a PASS can only go to EXECUTION_PENDING.",
 			].join(" "),
 			inputSchema: z.object({
 				task_id: z.string(),
@@ -222,6 +234,12 @@ export function buildLedgerTools(ledger: Ledger, topicId: string) {
 				artifact_file_id: z.string().optional(),
 				artifact_revision_id: z.string().optional(),
 				execution_outcome: z.enum(["SUCCEEDED", "FAILED", "UNKNOWN"]).optional(),
+				needs_external_action: z
+					.boolean()
+					.optional()
+					.describe(
+						"Set true if you learn the task needs an external action; it can't be turned off",
+					),
 				block_record: z
 					.object({
 						cause: z.string(),
