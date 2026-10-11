@@ -33,6 +33,99 @@ const MAX_REWORKS = 2;
 const MAX_EXEC_ATTEMPTS = 2;
 const MAX_RECONCILE_POLLS = 3;
 
+// Characters that can continue an identifier (task IDs, Drive fileIds, revisions, versions).
+const ID_CHAR = "A-Za-z0-9_-";
+
+/**
+ * True when `id` appears in `text` as a whole identifier, case-sensitively: "T1" matches
+ * "approve T1." but not "T10", "t1", "XT1" or "T1.5". A trailing dot only ends the match when no
+ * identifier character follows it, since task IDs may contain dots.
+ */
+export function containsExactId(text: string, id: string): boolean {
+	if (!id) return false;
+	const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(
+		`(?<![${ID_CHAR}])(?<![${ID_CHAR}]\\.)${escaped}(?![${ID_CHAR}])(?!\\.[${ID_CHAR}])`,
+	).test(text);
+}
+
+// Owner approval words, and words that turn a message into a refusal or a "not yet".
+const APPROVAL_WORDS = /\b(approve|approved|authori[sz]e|authori[sz]ed|go ahead|proceed)\b/i;
+const REFUSAL_WORDS =
+	/\b(not|no|never|reject(ed)?|den(y|ied)|declin(e|ed)|hold|wait|stop|cancel(l?ed)?)\b|n['’]t\b/i;
+
+type Verdict = "PASS" | "FAIL" | "INCONCLUSIVE";
+
+/**
+ * Reads a Validator verdict. A line "VERDICT: PASS|FAIL|INCONCLUSIVE" is authoritative and must be
+ * the only such line. Without one, the message must contain exactly one bare verdict word that
+ * isn't negated ("not PASS", "non-PASS", "isn't a PASS", "never PASS").
+ */
+export function parseVerdict(
+	text: string,
+): { ok: true; verdict: Verdict } | { ok: false; reason: string } {
+	const lines = [
+		...text.matchAll(/^[ \t*_>-]*VERDICT[ \t*_]*:[ \t*_]*(PASS|FAIL|INCONCLUSIVE)\b/gim),
+	];
+	if (lines.length > 1)
+		return { ok: false, reason: "The verdict message has more than one VERDICT line." };
+	if (lines.length === 1) return { ok: true, verdict: lines[0][1].toUpperCase() as Verdict };
+
+	const hits = [...text.matchAll(/\b(PASS|FAIL|INCONCLUSIVE)\b/g)];
+	const kinds = [...new Set(hits.map((h) => h[1]))];
+	if (hits.length !== 1) {
+		return {
+			ok: false,
+			reason: `The verdict message must contain a "VERDICT: PASS|FAIL|INCONCLUSIVE" line or exactly one verdict word (found: ${kinds.join(", ") || "none"}).`,
+		};
+	}
+	const before = text.slice(0, hits[0].index).split("\n").pop() ?? "";
+	if (isNegated(before))
+		return {
+			ok: false,
+			reason: `The verdict word ${hits[0][1]} is negated; ask for "VERDICT: ..."`,
+		};
+	return { ok: true, verdict: hits[0][1] as Verdict };
+}
+
+function isNegated(before: string): boolean {
+	if (/\bnon[ -]?$/i.test(before)) return true;
+	return before
+		.split(/\s+/)
+		.filter(Boolean)
+		.slice(-3)
+		.map((w) => w.replace(/[^A-Za-z'’]/g, ""))
+		.some((w) => /^(not|no|never|without|cannot)$/i.test(w) || /n['’]t$/i.test(w));
+}
+
+/** Audit-log copy of a request: every string clipped, and always valid JSON under 4000 chars. */
+function serializeRequest(request: unknown): string {
+	const clip = (v: unknown, max: number): unknown => {
+		if (typeof v === "string")
+			return v.length > max ? `${v.slice(0, max)}…[+${v.length - max}]` : v;
+		if (v && typeof v === "object")
+			return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clip(x, 500)]));
+		return v;
+	};
+	const full = JSON.stringify(clip(request, 1500));
+	if (full.length <= 4000) return full;
+	// Keep the fields the ledger queries later; drop the prose.
+	const r = (request ?? {}) as Record<string, unknown>;
+	const keep = [
+		"task_id",
+		"to_state",
+		"approval_message_id",
+		"verdict_message_id",
+		"artifact_file_id",
+		"artifact_revision_id",
+		"execution_outcome",
+	];
+	return JSON.stringify({
+		...Object.fromEntries(keep.filter((k) => k in r).map((k) => [k, clip(r[k], 200)])),
+		truncated: true,
+	});
+}
+
 // Plain moves that need no evidence. Evidence-gated moves are handled in requestTransition.
 const SIMPLE: Partial<Record<WorkflowState, WorkflowState[]>> = {
 	SPEC_ALIGNMENT: ["DISPATCH_READY"],
@@ -177,6 +270,7 @@ export class Ledger {
 		title: string,
 		objective: string,
 		topicId: string | null,
+		needsExternalAction = false,
 	): Promise<Result> {
 		await ensureLedgerSchema(this.db);
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(taskId)) {
@@ -195,13 +289,34 @@ export class Ledger {
 				`Task ${taskId} is already in the ledger.`,
 			);
 		}
-		await this.db
-			.prepare(
-				"INSERT INTO ledger_tasks (task_id, title, objective, topic_id) VALUES (?, ?, ?, ?)",
-			)
-			.bind(taskId, title.slice(0, 300), objective.slice(0, 4000), topicId)
-			.run();
-		await this.event(taskId, null, "INTAKE", "OK", "created", { title, objective });
+		try {
+			await this.db.batch([
+				this.db
+					.prepare(
+						"INSERT INTO ledger_tasks (task_id, title, objective, topic_id, needs_external_action) VALUES (?, ?, ?, ?, ?)",
+					)
+					.bind(
+						taskId,
+						title.slice(0, 300),
+						objective.slice(0, 4000),
+						topicId,
+						needsExternalAction ? 1 : 0,
+					),
+				this.eventStatement(taskId, null, "INTAKE", "OK", "created", {
+					title,
+					objective,
+					needs_external_action: needsExternalAction,
+				}),
+			]);
+		} catch (err) {
+			if (!isUniqueViolation(err)) throw err;
+			return this.reject(
+				{ task_id: taskId, to_state: "INTAKE" },
+				null,
+				"TASK_EXISTS",
+				`Task ${taskId} is already in the ledger.`,
+			);
+		}
 		return { ok: true, task: (await this.getTask(taskId))! };
 	}
 
@@ -228,6 +343,11 @@ export class Ledger {
 			);
 
 		const updates: Partial<TaskRow> = {};
+		// needs_external_action is a one-way latch: any accepted move can turn it on, none can clear it.
+		const needsExternalAction =
+			task.needs_external_action === 1 || req.needs_external_action === true;
+		if (needsExternalAction && task.needs_external_action !== 1)
+			updates.needs_external_action = 1;
 
 		// --- Blocking and cancellation are allowed from any non-terminal state, with rules. ---
 		if (to === "BLOCKED") {
@@ -240,13 +360,48 @@ export class Ledger {
 					"BLOCKED needs block_record {cause, resolution_prerequisite, resume_state}.",
 				);
 			}
-			if (TERMINAL.includes(br.resume_state) || br.resume_state === "BLOCKED") {
+			if (from === "BLOCKED") {
+				return this.reject(
+					req,
+					task,
+					"ALREADY_BLOCKED",
+					"The task is already BLOCKED; resolve it and resume, or cancel it.",
+				);
+			}
+			// A block pauses a state; it can't be used to skip ahead to another one.
+			if (br.resume_state !== from) {
 				return this.reject(
 					req,
 					task,
 					"INVALID_RESUME_STATE",
-					"resume_state must be a non-terminal, non-BLOCKED state.",
+					`resume_state must be the state you are blocking from (${from}).`,
 				);
+			}
+			if (req.verdict_message_id) {
+				// An INCONCLUSIVE review is recorded when it blocks the task.
+				if (from !== "VALIDATION_PENDING" && from !== "POST_EXEC_VALIDATION") {
+					return this.reject(
+						req,
+						task,
+						"VERDICT_NOT_APPLICABLE",
+						"verdict_message_id only applies when blocking from VALIDATION_PENDING or POST_EXEC_VALIDATION.",
+					);
+				}
+				const verdict = await this.verifyVerdict(req.verdict_message_id, task);
+				if (!verdict.ok)
+					return this.reject(req, task, "VALIDATOR_VERDICT_REQUIRED", verdict.reason);
+				if (verdict.verdict !== "INCONCLUSIVE") {
+					return this.reject(
+						req,
+						task,
+						"VERDICT_MISMATCH",
+						`That verdict is ${verdict.verdict}; only INCONCLUSIVE goes to BLOCKED. Use the normal move.`,
+					);
+				}
+				Object.assign(updates, {
+					validation_verdict: "INCONCLUSIVE",
+					verdict_message_id: req.verdict_message_id,
+				});
 			}
 			updates.block_record = JSON.stringify({
 				originating_state: from,
@@ -256,8 +411,22 @@ export class Ledger {
 			return this.commit(req, task, updates);
 		}
 		if (to === "CANCELLED" || to === "CANCELLATION_PENDING") {
-			const inFlight = from === "EXECUTION_ACTIVE" || from === "RECONCILIATION_PENDING";
-			if (to === "CANCELLED" && inFlight) {
+			// In flight: the state says so, or the outcome is still open (e.g. blocked mid-execution).
+			const inFlight =
+				from === "EXECUTION_ACTIVE" ||
+				from === "RECONCILIATION_PENDING" ||
+				task.execution_outcome === "IN_PROGRESS" ||
+				task.execution_outcome === "UNKNOWN";
+			if (from === "BLOCKED") updates.block_record = null;
+			if (to === "CANCELLATION_PENDING" && from === "CANCELLATION_PENDING") {
+				return this.reject(
+					req,
+					task,
+					"ILLEGAL_TRANSITION",
+					"Already CANCELLATION_PENDING; confirm the outcome and go to CANCELLED.",
+				);
+			}
+			if (to === "CANCELLED" && inFlight && from !== "CANCELLATION_PENDING") {
 				return this.reject(
 					req,
 					task,
@@ -288,17 +457,24 @@ export class Ledger {
 			return this.commit(req, task, updates);
 		}
 
-		// --- Leaving BLOCKED: only to the recorded resume state. ---
+		// --- Leaving BLOCKED: only back to the state that was paused. ---
 		if (from === "BLOCKED") {
-			const br = task.block_record
-				? (JSON.parse(task.block_record) as { resume_state?: string })
-				: null;
-			if (to !== br?.resume_state) {
+			let br: { resume_state?: string; originating_state?: string } | null = null;
+			try {
+				br = task.block_record ? JSON.parse(task.block_record) : null;
+			} catch {
+				br = null;
+			}
+			// Rows written before originating_state was enforced: read it from the audit log.
+			const origin = br?.originating_state ?? (await this.blockedFrom(task.task_id));
+			if (!br?.resume_state || !origin || to !== br.resume_state || to !== origin) {
 				return this.reject(
 					req,
 					task,
 					"ILLEGAL_TRANSITION",
-					`BLOCKED can only resume to ${br?.resume_state ?? "its recorded resume_state"}.`,
+					origin && br?.resume_state === origin
+						? `BLOCKED can only resume to ${origin}.`
+						: `This block can't resume safely (paused ${origin ?? "unknown state"}, resume_state ${br?.resume_state ?? "missing"}); cancel the task or recreate it.`,
 				);
 			}
 			updates.block_record = null;
@@ -309,12 +485,20 @@ export class Ledger {
 
 		switch (`${from}->${to}`) {
 			case "INTAKE->SPEC_ALIGNMENT": {
-				// Supervisor approval of the objective: any owner message in Zenzap.
-				const check = await this.verifyOwnerMessage(req.approval_message_id, null);
+				// Supervisor approval of the objective: an owner message naming this task and approving it.
+				const check = await this.verifyOwnerMessage(req.approval_message_id, task.task_id);
 				if (!check.ok)
 					return this.reject(req, task, "SUPERVISOR_APPROVAL_REQUIRED", check.reason);
+				if (await this.approvalUsed(req.approval_message_id!)) {
+					return this.reject(
+						req,
+						task,
+						"APPROVAL_ALREADY_CONSUMED",
+						"That approval was already used; ask the owner to approve this task's objective.",
+					);
+				}
 				updates.intake_approval_id = req.approval_message_id!;
-				return this.commit(req, task, updates);
+				return this.commit(req, task, updates, req.approval_message_id);
 			}
 			case "BUILD_ACTIVE->VALIDATION_PENDING":
 			case "REWORK_ACTIVE->VALIDATION_PENDING": {
@@ -360,7 +544,10 @@ export class Ledger {
 				const allowed: Record<string, WorkflowState[]> =
 					from === "VALIDATION_PENDING"
 						? {
-								PASS: ["CLOSEOUT_READY", "EXECUTION_PENDING"],
+								// A task that needs an external action can't close out before doing it.
+								PASS: needsExternalAction
+									? ["EXECUTION_PENDING"]
+									: ["CLOSEOUT_READY", "EXECUTION_PENDING"],
 								FAIL:
 									task.counter_build_rework < MAX_REWORKS
 										? ["REWORK_ACTIVE"]
@@ -398,14 +585,9 @@ export class Ledger {
 				const check = await this.verifyOwnerMessage(req.approval_message_id, task.task_id);
 				if (!check.ok)
 					return this.reject(req, task, "AUTHORIZATION_REQUIRED", check.reason);
-				// Single-use token: the approval message can be consumed exactly once.
-				const consumed = await this.db
-					.prepare(
-						"INSERT OR IGNORE INTO ledger_approvals (approval_id, task_id, status, consumed_at) VALUES (?, ?, 'CONSUMED', datetime('now'))",
-					)
-					.bind(req.approval_message_id, task.task_id)
-					.run();
-				if ((consumed.meta.changes ?? 0) === 0) {
+				// Single-use token: the approval message can be consumed exactly once. It is consumed
+				// in the same batch as the move (see commit), so a failed move doesn't use it up.
+				if (await this.approvalUsed(req.approval_message_id!)) {
 					return this.reject(
 						req,
 						task,
@@ -419,7 +601,7 @@ export class Ledger {
 					counter_exec_attempts: task.counter_exec_attempts + 1,
 					pending_approval_id: req.approval_message_id,
 				});
-				return this.commit(req, task, updates);
+				return this.commit(req, task, updates, req.approval_message_id);
 			}
 			case "EXECUTION_ACTIVE->POST_EXEC_VALIDATION":
 			case "RECONCILIATION_PENDING->POST_EXEC_VALIDATION": {
@@ -521,18 +703,17 @@ export class Ledger {
 	private async verifyVerdict(
 		messageId: string | undefined,
 		task: TaskRow,
-	): Promise<
-		{ ok: true; verdict: "PASS" | "FAIL" | "INCONCLUSIVE" } | { ok: false; reason: string }
-	> {
+	): Promise<{ ok: true; verdict: Verdict } | { ok: false; reason: string }> {
 		if (!messageId)
 			return {
 				ok: false,
 				reason: "Cite the Validator's verdict message (verdict_message_id).",
 			};
 		// A verdict covers one review: the pre-execution PASS can't be reused for post-execution validation.
+		// json_valid guards old rows whose request was cut mid-JSON.
 		const used = await this.db
 			.prepare(
-				"SELECT 1 FROM ledger_events WHERE task_id = ? AND result = 'OK' AND json_extract(request, '$.verdict_message_id') = ?",
+				"SELECT 1 FROM ledger_events WHERE task_id = ? AND result = 'OK' AND CASE WHEN json_valid(request) THEN json_extract(request, '$.verdict_message_id') END = ?",
 			)
 			.bind(task.task_id, messageId)
 			.first();
@@ -546,33 +727,24 @@ export class Ledger {
 		if (msg.senderId !== this.roles.validatorId)
 			return { ok: false, reason: "That message isn't from the Validator (Custodian)." };
 		const text = msg.text;
-		if (task.artifact_file_id && !text.includes(task.artifact_file_id)) {
+		if (task.artifact_file_id && !containsExactId(text, task.artifact_file_id)) {
 			return {
 				ok: false,
 				reason: `The verdict must cite the artifact fileId ${task.artifact_file_id}.`,
 			};
 		}
-		if (task.artifact_revision_id && !text.includes(task.artifact_revision_id)) {
+		if (task.artifact_revision_id && !containsExactId(text, task.artifact_revision_id)) {
 			return {
 				ok: false,
 				reason: `The verdict must cite the artifact revision ${task.artifact_revision_id}.`,
 			};
 		}
-		const found = (["PASS", "FAIL", "INCONCLUSIVE"] as const).filter((v) =>
-			new RegExp(`\\b${v}\\b`).test(text),
-		);
-		if (found.length !== 1) {
-			return {
-				ok: false,
-				reason: `The verdict message must contain exactly one of PASS, FAIL or INCONCLUSIVE (found: ${found.join(", ") || "none"}).`,
-			};
-		}
-		return { ok: true, verdict: found[0] };
+		return parseVerdict(text);
 	}
 
 	private async verifyOwnerMessage(
 		messageId: string | undefined,
-		taskId: string | null,
+		taskId: string,
 	): Promise<{ ok: true } | { ok: false; reason: string }> {
 		if (!messageId)
 			return {
@@ -585,31 +757,46 @@ export class Ledger {
 		if (!msg) return { ok: false, reason: `Couldn't find message ${messageId}.` };
 		if (msg.senderId !== this.roles.ownerId)
 			return { ok: false, reason: "That message isn't from the owner." };
-		if (taskId) {
-			if (!msg.text.toLowerCase().includes(taskId.toLowerCase())) {
-				return {
-					ok: false,
-					reason: `The owner's approval must name the task (${taskId}).`,
-				};
-			}
-			if (
-				!/\b(approve|approved|authori[sz]e|authori[sz]ed|go ahead|proceed)\b/i.test(
-					msg.text,
-				)
-			) {
-				return {
-					ok: false,
-					reason: "The owner's message doesn't approve anything (expected e.g. 'approved').",
-				};
-			}
-			if (/\b(not|don'?t|do not|never|no)\b/i.test(msg.text)) {
-				return {
-					ok: false,
-					reason: "The owner's message contains a negation; ask for an unambiguous approval.",
-				};
-			}
+		if (!containsExactId(msg.text, taskId)) {
+			return {
+				ok: false,
+				reason: `The owner's approval must name the task exactly (${taskId}, same case).`,
+			};
+		}
+		// Check the words around the ID, not the ID itself (an ID like NO-1 isn't a refusal).
+		const words = msg.text.split(taskId).join(" ");
+		if (!APPROVAL_WORDS.test(words)) {
+			return {
+				ok: false,
+				reason: `The owner's message doesn't approve anything (expected e.g. "approve ${taskId}").`,
+			};
+		}
+		if (REFUSAL_WORDS.test(words)) {
+			return {
+				ok: false,
+				reason: "The owner's message contains a refusal or a hold; ask for an unambiguous approval.",
+			};
 		}
 		return { ok: true };
+	}
+
+	/** Whether an owner message was already used as an approval (each one counts once). */
+	private async approvalUsed(approvalId: string): Promise<boolean> {
+		return !!(await this.db
+			.prepare("SELECT 1 FROM ledger_approvals WHERE approval_id = ?")
+			.bind(approvalId)
+			.first());
+	}
+
+	/** The state a task was in when it was last blocked, from the audit log. */
+	private async blockedFrom(taskId: string): Promise<string | null> {
+		const row = await this.db
+			.prepare(
+				"SELECT from_state FROM ledger_events WHERE task_id = ? AND result = 'OK' AND to_state = 'BLOCKED' ORDER BY id DESC LIMIT 1",
+			)
+			.bind(taskId)
+			.first<{ from_state: string | null }>();
+		return row?.from_state ?? null;
 	}
 
 	/** Reads a message from the Worker's own recorded samples, falling back to the Zenzap API. */
@@ -644,32 +831,78 @@ export class Ledger {
 
 	// --- Persistence ---
 
+	/**
+	 * Applies one transition atomically: the task update, the consumed approval (if any) and the OK
+	 * event go in one batch. The update only matches if the task is unchanged since it was read, and
+	 * the later inserts only run if the update changed a row (changes() = 1), so a stale request
+	 * writes nothing and comes back STALE_STATE.
+	 */
 	private async commit(
 		req: TransitionRequest,
 		task: TaskRow,
 		updates: Partial<TaskRow>,
+		consumeApprovalId?: string,
 	): Promise<Result> {
 		const fields = { ...updates, workflow_state: req.to_state };
 		const cols = Object.keys(fields);
-		await this.db
-			.prepare(
-				`UPDATE ledger_tasks SET ${cols.map((c) => `${c} = ?`).join(", ")}, updated_at = datetime('now')
-				WHERE task_id = ? AND workflow_state = ?`,
-			)
-			.bind(
-				...cols.map((c) => (fields as Record<string, unknown>)[c] ?? null),
+		const statements = [
+			this.db
+				.prepare(
+					`UPDATE ledger_tasks SET ${cols.map((c) => `${c} = ?`).join(", ")}, updated_at = datetime('now')
+				WHERE task_id = ? AND workflow_state = ? AND updated_at = ?`,
+				)
+				.bind(
+					...cols.map((c) => (fields as Record<string, unknown>)[c] ?? null),
+					task.task_id,
+					task.workflow_state,
+					task.updated_at,
+				),
+		];
+		if (consumeApprovalId) {
+			statements.push(
+				this.db
+					.prepare(
+						"INSERT INTO ledger_approvals (approval_id, task_id, status, consumed_at) SELECT ?, ?, 'CONSUMED', datetime('now') WHERE changes() = 1",
+					)
+					.bind(consumeApprovalId, task.task_id),
+			);
+		}
+		statements.push(
+			this.eventStatement(
 				task.task_id,
 				task.workflow_state,
-			)
-			.run();
-		await this.event(
-			task.task_id,
-			task.workflow_state,
-			req.to_state,
-			"OK",
-			req.note ?? null,
-			req,
+				req.to_state,
+				"OK",
+				req.note ?? null,
+				req,
+				true,
+			),
 		);
+
+		let results: D1Result[];
+		try {
+			results = await this.db.batch(statements);
+		} catch (err) {
+			// Another request consumed the same approval between our check and this batch.
+			if (consumeApprovalId && isUniqueViolation(err)) {
+				return this.reject(
+					req,
+					task,
+					"APPROVAL_ALREADY_CONSUMED",
+					"That approval was already used; the owner must approve this attempt again.",
+				);
+			}
+			throw err;
+		}
+		if ((results[0]?.meta?.changes ?? 0) !== 1) {
+			const now = await this.getTask(task.task_id);
+			return this.reject(
+				req,
+				now ?? task,
+				"STALE_STATE",
+				`The task changed while this request was checked (was ${task.workflow_state}, now ${now?.workflow_state ?? "missing"}). Nothing was written${consumeApprovalId ? " and the approval wasn't used" : ""}; re-read the task and retry.`,
+			);
+		}
 		return { ok: true, task: (await this.getTask(task.task_id))! };
 	}
 
@@ -679,14 +912,14 @@ export class Ledger {
 		error: string,
 		reason: string,
 	): Promise<Result> {
-		await this.event(
+		await this.eventStatement(
 			req.task_id,
 			task?.workflow_state ?? null,
 			req.to_state,
 			"REJECTED",
 			`${error}: ${reason}`,
 			req,
-		);
+		).run();
 		return {
 			ok: false,
 			error,
@@ -696,19 +929,36 @@ export class Ledger {
 		};
 	}
 
-	private async event(
+	/** An audit-log insert. With onlyIfChanged, it only writes if the previous statement changed a row. */
+	private eventStatement(
 		taskId: string,
 		from: string | null,
 		to: string | null,
 		result: string,
 		reason: string | null,
 		request: unknown,
-	) {
-		await this.db
+		onlyIfChanged = false,
+	): D1PreparedStatement {
+		const cols = "task_id, from_state, to_state, result, reason, request";
+		return this.db
 			.prepare(
-				"INSERT INTO ledger_events (task_id, from_state, to_state, result, reason, request) VALUES (?, ?, ?, ?, ?, ?)",
+				onlyIfChanged
+					? `INSERT INTO ledger_events (${cols}) SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`
+					: `INSERT INTO ledger_events (${cols}) VALUES (?, ?, ?, ?, ?, ?)`,
 			)
-			.bind(taskId, from, to, result, reason, JSON.stringify(request).slice(0, 4000))
-			.run();
+			.bind(
+				taskId,
+				from,
+				to,
+				result,
+				reason?.slice(0, 2000) ?? null,
+				serializeRequest(request),
+			);
 	}
+}
+
+function isUniqueViolation(err: unknown): boolean {
+	return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(
+		String((err as Error)?.message ?? err),
+	);
 }
