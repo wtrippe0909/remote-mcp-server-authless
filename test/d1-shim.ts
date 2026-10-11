@@ -44,6 +44,8 @@ class Statement {
 
 export class D1Shim {
 	readonly sqlite = new DatabaseSync(":memory:");
+	/** Test hook: batch statements this matches are skipped and report 0 changes. */
+	skipInBatch?: (sql: string) => boolean;
 
 	prepare(sql: string) {
 		return new Statement(this.sqlite, sql);
@@ -52,7 +54,11 @@ export class D1Shim {
 	async batch(statements: Statement[]) {
 		this.sqlite.exec("BEGIN");
 		try {
-			const out = statements.map((s) => s.runSync());
+			const out = statements.map((s) =>
+				this.skipInBatch?.(s.sql)
+					? { results: [], success: true, meta: { changes: 0, last_row_id: 0 } }
+					: s.runSync(),
+			);
 			this.sqlite.exec("COMMIT");
 			return out;
 		} catch (err) {

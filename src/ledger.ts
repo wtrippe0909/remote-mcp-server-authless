@@ -887,6 +887,34 @@ export class Ledger {
 				`The task changed while this request was checked (was ${task.workflow_state}, now ${now?.workflow_state ?? "missing"}). Nothing was written${consumeApprovalId ? " and the approval wasn't used" : ""}; re-read the task and retry.`,
 			);
 		}
+		// The update went through, so the chained inserts must have too. If one didn't (e.g. changes()
+		// isn't carried between batch statements), say so loudly instead of losing the approval record
+		// or the audit event without a trace.
+		const names = [
+			"task update",
+			...(consumeApprovalId ? ["approval record"] : []),
+			"audit event",
+		];
+		const missing = names.filter((_, i) => i > 0 && (results[i]?.meta?.changes ?? 0) !== 1);
+		if (missing.length) {
+			const reason = `The task moved ${task.workflow_state} -> ${req.to_state}, but the ${missing.join(" and ")} wasn't written. The ledger may be inconsistent; stop and tell the owner.`;
+			console.error(`ledger WRITE_INCONSISTENT for ${task.task_id}: ${reason}`);
+			await this.eventStatement(
+				task.task_id,
+				task.workflow_state,
+				req.to_state,
+				"WRITE_INCONSISTENT",
+				reason,
+				req,
+			).run();
+			return {
+				ok: false,
+				error: "WRITE_INCONSISTENT",
+				current_state: req.to_state,
+				target_state: req.to_state,
+				reason,
+			};
+		}
 		return { ok: true, task: (await this.getTask(task.task_id))! };
 	}
 

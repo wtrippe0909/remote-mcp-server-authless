@@ -528,6 +528,27 @@ test("10. a task that changed mid-request writes nothing and keeps the approval"
 	assert.equal(okExec.length, 0, "no OK event for a move that didn't happen");
 });
 
+test("10. a chained insert that didn't run is reported, not hidden", async () => {
+	await create("Z1");
+	// Simulate D1 not carrying changes() between batch statements: the audit insert is skipped.
+	db.skipInBatch = (sql) =>
+		sql.startsWith("INSERT INTO ledger_events") && sql.includes("changes()");
+	try {
+		const r = await rejected(
+			{ task_id: "Z1", to_state: "SPEC_ALIGNMENT", approval_message_id: owner("approve Z1") },
+			"WRITE_INCONSISTENT",
+		);
+		assert.match(r.ok ? "" : r.reason, /audit event wasn't written/);
+	} finally {
+		db.skipInBatch = undefined;
+	}
+	const log = await events("Z1");
+	assert.deepEqual(
+		log.map((e) => `${e.result} ${e.to_state}`),
+		["OK INTAKE", "WRITE_INCONSISTENT SPEC_ALIGNMENT"],
+	);
+});
+
 test("10. an approval is single-use, including one first used at intake", async () => {
 	await create("U1");
 	const approval = owner("approve U1");
