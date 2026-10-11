@@ -13,6 +13,9 @@ import {
 	type ZenzapMessage,
 } from "./zenzap";
 
+/** The owner stopped using Zenzap; the operator no longer polls it. */
+const OPERATOR_DISABLED = true;
+
 export interface OperatorEnv {
 	OPERATOR: DurableObjectNamespace<ExecutiveOperator>;
 	ZENZAP_BASE_URL: string;
@@ -168,6 +171,7 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 
 	/** Called by the cron watchdog: make sure the polling alarm is scheduled. */
 	async ensurePolling(): Promise<void> {
+		if (OPERATOR_DISABLED) return;
 		const alarm = await this.ctx.storage.getAlarm();
 		if (alarm === null || alarm < Date.now() - 60_000) {
 			await this.ctx.storage.setAlarm(Date.now() + 1000);
@@ -175,6 +179,11 @@ export class ExecutiveOperator extends DurableObject<OperatorEnv> {
 	}
 
 	async alarm(): Promise<void> {
+		// Switched off (see scheduled() in index.ts): clear the pending alarm and stop polling Zenzap.
+		if (OPERATOR_DISABLED) {
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
 		try {
 			await this.poll();
 		} catch (err) {
