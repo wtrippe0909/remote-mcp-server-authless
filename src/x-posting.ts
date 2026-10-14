@@ -226,6 +226,16 @@ function base64ToBytes(base64: string): Uint8Array {
 const APPEND_SEGMENT_BYTES = 4 * 1024 * 1024; // X append segments must be < 5 MB
 
 /**
+ * Copy out one upload segment. This MUST be a copy (slice), not a view
+ * (subarray): a view's underlying .buffer is the whole file, so handing
+ * the buffer to a Blob would re-send the entire file as every segment —
+ * caught in review, 2026-10-14. Tests pin the exact-length behavior.
+ */
+export function sliceSegment(bytes: Uint8Array, offset: number, size: number): Uint8Array {
+	return bytes.slice(offset, Math.min(offset + size, bytes.length));
+}
+
+/**
  * Chunked media upload via the v2 media endpoints:
  * initialize -> append (segments) -> finalize -> poll processing status.
  * NOTE (flagged in the review doc): the STATUS poll path is implemented
@@ -253,7 +263,7 @@ export async function xUploadMedia(
 	if (!mediaId) throw new Error(`Media initialize returned no id: ${JSON.stringify(init.data)}`);
 
 	for (let offset = 0, segmentIndex = 0; offset < bytes.length; offset += APPEND_SEGMENT_BYTES, segmentIndex++) {
-		const chunk = bytes.subarray(offset, Math.min(offset + APPEND_SEGMENT_BYTES, bytes.length));
+		const chunk = sliceSegment(bytes, offset, APPEND_SEGMENT_BYTES);
 		const form = new FormData();
 		form.append("segment_index", String(segmentIndex));
 		form.append("media", new Blob([chunk.buffer as ArrayBuffer], { type: mediaType }));

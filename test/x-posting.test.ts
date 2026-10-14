@@ -4,6 +4,7 @@ import {
 	authenticateMcpRequest,
 	buildOAuthHeader,
 	percentEncode,
+	sliceSegment,
 	type XPostingEnv,
 } from "../src/x-posting";
 
@@ -62,6 +63,18 @@ test("OAuth 1.0a signature on an X-shaped POST matches an independent implementa
 		header.includes('oauth_signature="hCtSmYh%2BiHYCEqBWrE7C7hYmtUk%3D"'),
 		`signature mismatch in header: ${header}`,
 	);
+});
+
+test("sliceSegment returns an exact-length copy, never a whole-buffer view", () => {
+	const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+	const seg = sliceSegment(bytes, 4, 4);
+	assert.deepEqual([...seg], [4, 5, 6, 7]);
+	// The regression this guards: seg.buffer must be exactly the segment,
+	// not the 10-byte source buffer a subarray view would expose.
+	assert.equal((seg.buffer as ArrayBuffer).byteLength, 4);
+	const tail = sliceSegment(bytes, 8, 4);
+	assert.deepEqual([...tail], [8, 9]);
+	assert.equal((tail.buffer as ArrayBuffer).byteLength, 2);
 });
 
 test("missing X secrets fail loudly, not silently", async () => {
