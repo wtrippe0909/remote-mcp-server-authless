@@ -1,95 +1,68 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+# Remote MCP Server on Cloudflare (Without Auth)
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers.
+A remote MCP server with no authentication, deployed on Cloudflare Workers.
 
-## Get started:
+**Public endpoint:** `/mcp` exposes three demo tools only: `add`, `calculate`, and `greet`. It has no access to any external service or credentials.
+
+## Get started
+
+Deploy to Workers:
 
 [![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/mcp`
-
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
+Or create a local copy from the template:
 
 ```bash
 npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
 ```
 
-## Customizing your MCP Server
+Once deployed, the server is at `https://<your-worker>.<your-account>.workers.dev/mcp`.
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`.
+## Local development
 
-## Connect to Cloudflare AI Playground
+```bash
+npm install
+npm run dev        # wrangler dev, serves on http://localhost:8787
+npm run type-check
+npm test
+```
 
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
+## Customizing
 
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/mcp`)
-3. You can now use your MCP tools directly from the playground!
+Add tools inside `init()` in `src/index.ts` using `this.server.registerTool(...)`.
 
-## Connect Claude Desktop to your MCP server
+## Connect a client
 
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote).
+**Cloudflare AI Playground:** go to https://playground.ai.cloudflare.com/, enter your `/mcp` URL, and use the tools.
 
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
-
-Update with this configuration:
+**Claude Desktop (via mcp-remote):** open Settings > Developer > Edit Config and add:
 
 ```json
 {
 	"mcpServers": {
-		"calculator": {
+		"remote-mcp-server": {
 			"command": "npx",
 			"args": [
 				"mcp-remote",
-				"http://localhost:8787/mcp" // or remote-mcp-server-authless.your-account.workers.dev/mcp
+				"http://localhost:8787/mcp"
 			]
 		}
 	}
 }
 ```
 
-Restart Claude and you should see the tools become available.
+Replace the URL with your deployed `/mcp` URL when not running locally. Restart Claude Desktop to load the tools.
 
-## Executive Operator (Zenzap agent)
+## Executive Operator (Zenzap agent): switched off
 
-This Worker also runs **Executive Operator**, a Claude-powered agent you chat with in Zenzap. It watches your Zenzap
-*control topic*, answers each new message with Claude (`claude-opus-5-5`), and can act in your workspace: read
-topics and messages, look up members, create topics, message other topics, and create and update tasks and polls.
+`src/operator.ts` and related files contain a Claude-powered agent that was designed to watch a Zenzap control topic and act on it. It is **switched off** (owner decision, 2026-10-11):
 
-How it works:
+- `wrangler.jsonc` has no cron triggers (`"crons": []`).
+- `scheduled()` in `src/index.ts` does nothing.
+- The Zenzap tools are not exposed through `/mcp`.
 
-- A Durable Object (`ExecutiveOperator`) polls `GET /v2/topics/{controlTopicId}/messages` every
-  `POLL_INTERVAL_SECONDS` (default 15) using a Durable Object alarm. A cron trigger runs every minute to restart the
-  alarm if it ever stops.
-- On the very first poll it only records existing messages and doesn't reply to old history.
-- It ignores its own messages (matched by bot member ID and by the IDs of messages it sent). If `OWNER_MEMBER_ID` is
-  set, it only answers that member.
-- New messages go to Claude with the last 20 exchanges as context. Claude can call the Zenzap tools in
-  `src/operator-tools.ts` (up to 15 rounds), and its final answer is posted back to the control topic.
-- Every Zenzap request is signed with the static-API-key HMAC scheme (`src/zenzap.ts`).
-- There is no public HTTP endpoint for the agent. The existing `/mcp` server is unauthenticated, so the Zenzap
-  tools are deliberately **not** exposed through it.
+To re-enable it, restore the cron in `wrangler.jsonc` and the calls noted in the comment in `src/index.ts`. Its secrets are set with `wrangler secret put`: `ZENZAP_API_KEY`, `ZENZAP_API_SECRET`, `ANTHROPIC_API_KEY`, and optionally `OWNER_MEMBER_ID`. Those secrets must be set before it will run.
 
-### Deploy
+### Known assumptions (for when it's re-enabled)
 
-```bash
-npm install
-npx wrangler secret put ZENZAP_API_KEY       # API Key from the Zenzap "Connect your AI agent" screen
-npx wrangler secret put ZENZAP_API_SECRET    # API Secret from the same screen
-npx wrangler secret put ANTHROPIC_API_KEY    # https://console.anthropic.com/settings/keys
-# optional: only respond to you
-npx wrangler secret put OWNER_MEMBER_ID
-npm run deploy
-```
-
-`ZENZAP_BASE_URL`, `ZENZAP_CONTROL_TOPIC_ID`, `POLL_INTERVAL_SECONDS` and `AGENT_EFFORT` are plain vars in
-`wrangler.jsonc`. The first reply can take up to a minute, until the cron starts the polling loop. Then send a
-message in the control topic. Use `npx wrangler tail` to follow the logs.
-
-### Known assumptions
-
-The response shapes of Zenzap's list endpoints and the request bodies for tasks and polls weren't available when
-this was written. Message parsing (`normalizeMessage` / `extractList` in `src/zenzap.ts`) accepts the common field
-names (`messages`/`data`/`items`, `text`/`body`, `senderId`/`sender.id`, and so on). If it finds no messages, it
-logs the raw payload so the parser can be adjusted. For tasks and polls, the agent uses the generic `zenzap_request`
-tool and corrects itself from Zenzap's error messages.
+The response shapes of Zenzap's list endpoints and the request bodies for tasks and polls were not confirmed when this was written. `normalizeMessage` and `extractList` in `src/zenzap.ts` accept common field-name variants and log the raw payload when they find no messages. Tasks and polls use the generic `zenzap_request` tool.
