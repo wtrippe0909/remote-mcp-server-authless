@@ -8,7 +8,7 @@ export { ExecutiveOperator } from "./operator";
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Authless Calculator",
+		name: "Authless MCP Server",
 		version: "1.0.0",
 	});
 
