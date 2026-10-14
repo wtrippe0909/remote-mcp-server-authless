@@ -318,7 +318,19 @@ export function authenticateMcpRequest(request: Request, env: XPostingEnv): stri
 		return null;
 	}
 	const header = request.headers.get("Authorization") ?? "";
-	const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+	let presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+	if (!presented) {
+		// URL-only clients (e.g. Grok's custom-connector dialog has no header
+		// field — URL is the only input) present the same per-client token as
+		// ?key= instead. Weaker than a header (URLs can land in logs), so the
+		// token stays per-client and individually revocable; added 2026-10-14
+		// on the owner's order to admit Grok.
+		try {
+			presented = new URL(request.url).searchParams.get("key") ?? "";
+		} catch {
+			presented = "";
+		}
+	}
 	if (!presented) return null;
 	for (const [client, token] of Object.entries(tokens)) {
 		if (typeof token === "string" && token.length > 0 && timingSafeEqual(presented, token)) {
