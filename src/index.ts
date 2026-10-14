@@ -2,14 +2,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import type { OperatorEnv } from "./operator";
+import {
+	authenticateMcpRequest,
+	registerXPostingTools,
+	type XPostingEnv,
+} from "./x-posting";
 
 export { ExecutiveOperator } from "./operator";
 
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Authless MCP Server",
-		version: "1.0.0",
+		name: "Fleet MCP Server",
+		version: "1.1.0",
 	});
 
 	async init() {
@@ -78,14 +83,36 @@ export class MyMCP extends McpAgent {
 				],
 			}),
 		);
+
+		// X posting tools (staged 2026-10-14): x_whoami, draft_x_post,
+		// publish_x_post. Env is read lazily at call time via this.env.
+		registerXPostingTools(this.server, () => this.env as Env & XPostingEnv);
 	}
 }
 
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+	fetch(request: Request, env: Env & XPostingEnv, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
+		if (url.pathname === "/health") {
+			return Response.json({
+				ok: true,
+				server: "Fleet MCP Server",
+				x_posting_enabled: env.X_POSTING_ENABLED === "true",
+				mcp_auth_configured: Boolean(env.MCP_CLIENT_TOKENS),
+			});
+		}
+
 		if (url.pathname === "/mcp") {
+			// Authenticated per AI client (fleet-shared, owner-controlled).
+			// Fails closed when MCP_CLIENT_TOKENS is not configured.
+			const client = authenticateMcpRequest(request, env);
+			if (!client) {
+				return new Response(
+					"Unauthorized: a valid per-client bearer token is required for /mcp.",
+					{ status: 401 },
+				);
+			}
 			return MyMCP.serve("/mcp").fetch(request, env, ctx);
 		}
 
