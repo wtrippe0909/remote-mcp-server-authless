@@ -99,3 +99,20 @@ test("per-client MCP auth identifies the caller and fails closed", () => {
 	// No tokens configured at all -> nobody is authenticated.
 	assert.equal(authenticateMcpRequest(as("token-grok"), {}), null);
 });
+
+test("per-client auth accepts ?key= for URL-only clients (e.g. Grok)", () => {
+	const env: XPostingEnv = {
+		MCP_CLIENT_TOKENS: JSON.stringify({ muse: "token-muse", grok: "token-grok" }),
+	};
+	const withKey = (key?: string) =>
+		new Request(`https://example.workers.dev/mcp${key ? `?key=${key}` : ""}`);
+	assert.equal(authenticateMcpRequest(withKey("token-grok"), env), "grok");
+	assert.equal(authenticateMcpRequest(withKey("token-muse"), env), "muse");
+	assert.equal(authenticateMcpRequest(withKey("token-wrong"), env), null);
+	assert.equal(authenticateMcpRequest(withKey(), env), null);
+	// A valid header still wins when both are present.
+	const both = new Request("https://example.workers.dev/mcp?key=token-wrong", {
+		headers: { Authorization: "Bearer token-muse" },
+	});
+	assert.equal(authenticateMcpRequest(both, env), "muse");
+});
