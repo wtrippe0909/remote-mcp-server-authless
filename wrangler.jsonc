@@ -39,6 +39,12 @@
 		"AGENT_EFFORT": "medium",
 		// Doctrine v2.3 Validator (Custodian): only its messages count as verdicts in the ledger.
 		"VALIDATOR_MEMBER_ID": "b@e1f282f7-f03f-4ce5-a88d-6d49e499c2a9",
+		// X posting (staged 2026-10-14, NOT deployed): publishing stays OFF
+		// until the owner flips this to "true" at deploy time. Secrets are
+		// set with `wrangler secret put` (never in this file):
+		// X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN,
+		// X_ACCESS_TOKEN_SECRET, GFED_APPROVAL_CODE, MCP_CLIENT_TOKENS.
+		"X_POSTING_ENABLED": "false",
 	},
 	// Zenzap docs and raw API payloads saved for inspection (see src/research.ts).
 	"d1_databases": [
