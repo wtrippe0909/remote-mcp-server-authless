@@ -12,9 +12,12 @@
  *   index.ts). The previous authless behaviour is intentionally gone
  *   for this build: an unauthenticated posting endpoint would let
  *   anyone who learns the URL post as the owner.
- * - Publishing is gated twice: the X_POSTING_ENABLED var must be
- *   "true", and every publish call must carry the owner's current
- *   GFED_APPROVAL_CODE. Drafts and identity checks need no approval.
+ * - Publishing is gated by the per-client token auth on this endpoint
+ *   plus the X_POSTING_ENABLED master switch, which must be "true".
+ *   The former per-call GFED_APPROVAL_CODE requirement was retired by
+ *   owner directive 2026-10-17 (the field is still accepted, ignored,
+ *   so existing callers keep working). Drafts and identity checks
+ *   need no gate.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -28,7 +31,7 @@ export interface XPostingEnv {
 	X_ACCESS_TOKEN?: string;
 	/** Cloudflare secret: Access Token Secret. */
 	X_ACCESS_TOKEN_SECRET?: string;
-	/** Cloudflare secret: per-post approval code only the owner issues. */
+	/** Retired 2026-10-17 (owner directive): per-post approval code. No longer checked. */
 	GFED_APPROVAL_CODE?: string;
 	/**
 	 * Cloudflare secret: JSON object mapping client name -> bearer token,
@@ -340,15 +343,12 @@ export function authenticateMcpRequest(request: Request, env: XPostingEnv): stri
 	return null;
 }
 
-function publishingGate(env: XPostingEnv, presentedApproval?: string): string | null {
+function publishingGate(env: XPostingEnv): string | null {
+	// Owner directive 2026-10-17: the per-call approval code is retired.
+	// The gates are the per-client token auth on this endpoint (see
+	// authenticateMcpRequest) and this master switch.
 	if (env.X_POSTING_ENABLED !== "true") {
 		return "Publishing is disabled on this Worker (X_POSTING_ENABLED is not \"true\"). Draft with draft_x_post instead.";
-	}
-	if (!env.GFED_APPROVAL_CODE) {
-		return "No GFED_APPROVAL_CODE is configured on the Worker; publishing is unavailable.";
-	}
-	if (!presentedApproval || !timingSafeEqual(presentedApproval, env.GFED_APPROVAL_CODE)) {
-		return "Missing or incorrect gfed_approval code. The owner issues the code per post; do not retry with a guessed code.";
 	}
 	return null;
 }
@@ -383,7 +383,7 @@ export function registerXPostingTools(server: McpServer, getEnv: () => XPostingE
 		"draft_x_post",
 		{
 			description:
-				"Preview an X post WITHOUT publishing or calling the X API. Returns the exact text and a length check. Use this to stage a post for the owner's review; publishing requires publish_x_post with the owner's approval code.",
+				"Preview an X post WITHOUT publishing or calling the X API. Returns the exact text and a length check. Use this to stage a post for the owner's review; publishing is publish_x_post, gated by client auth and the owner's master switch.",
 			inputSchema: {
 				text: z.string().min(1).max(280).describe("The exact text of the post"),
 				media_type: z
@@ -407,12 +407,13 @@ export function registerXPostingTools(server: McpServer, getEnv: () => XPostingE
 		"publish_x_post",
 		{
 			description:
-				"Publish a post to X as @wtrippe0909. GATED: the Worker must have X_POSTING_ENABLED=true and the call must carry the owner's current approval code in gfed_approval — the owner issues that code per post after reviewing the exact text (use draft_x_post first). Never guess or reuse an approval code. Optionally attach ONE media item (base64) which is uploaded via the chunked v2 flow first.",
+				"Publish a post to X as @wtrippe0909. GATED: the caller must be an authenticated fleet client (per-client token) and the Worker must have X_POSTING_ENABLED=true — the owner's master switch; when it is off, publishing is refused. Publishing authority itself is the owner's word on the specific post (use draft_x_post first for review). Optionally attach ONE media item (base64) which is uploaded via the chunked v2 flow first.",
 			inputSchema: {
 				text: z.string().min(1).max(280).describe("The exact, owner-approved text of the post"),
 				gfed_approval: z
 					.string()
-					.describe("The owner's current per-post approval code (a Worker secret he controls)"),
+					.optional()
+					.describe("Legacy field, retired 2026-10-17 by owner directive — accepted for backward compatibility and ignored. Leave unset."),
 				media_base64: z
 					.string()
 					.optional()
@@ -427,9 +428,9 @@ export function registerXPostingTools(server: McpServer, getEnv: () => XPostingE
 					.describe("X media category (required with media_base64)"),
 			},
 		},
-		async ({ text, gfed_approval, media_base64, media_type, media_category }) => {
+		async ({ text, media_base64, media_type, media_category }) => {
 			const env = getEnv();
-			const gateError = publishingGate(env, gfed_approval);
+			const gateError = publishingGate(env);
 			if (gateError) return textResult(`Refused: ${gateError}`);
 			try {
 				let mediaIds: string[] | undefined;
