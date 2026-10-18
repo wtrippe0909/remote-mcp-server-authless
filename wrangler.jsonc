@@ -40,12 +40,16 @@
 		// Doctrine v2.3 Validator (Custodian): only its messages count as verdicts in the ledger.
 		"VALIDATOR_MEMBER_ID": "b@e1f282f7-f03f-4ce5-a88d-6d49e499c2a9",
 		// X posting: X_POSTING_ENABLED is the owner's master switch and is
-		// managed as a dashboard secret (set 2026-10-14 after a deploy with
-		// it as a plain var reset it to OFF). It must NOT be declared here:
-		// a vars entry would override the secret on every deploy. Secrets
-		// are set with `wrangler secret put` (never in this file):
-		// X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN,
-		// X_ACCESS_TOKEN_SECRET, MCP_CLIENT_TOKENS.
+		// declared HERE because Workers Builds treats this file as the
+		// deploy source of truth — a dashboard-set binding that is not
+		// declared here gets dropped on deploy (observed 2026-10-17, when
+		// removing this entry flipped the live switch to false). To turn
+		// publishing OFF, set this to "false" and redeploy; to turn it
+		// back on, set "true" and redeploy. The credential secrets are set
+		// with `wrangler secret put` (never in this file): X_CONSUMER_KEY,
+		// X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET,
+		// MCP_CLIENT_TOKENS.
+		"X_POSTING_ENABLED": "true",
 	},
 	// Zenzap docs and raw API payloads saved for inspection (see src/research.ts).
 	"d1_databases": [
