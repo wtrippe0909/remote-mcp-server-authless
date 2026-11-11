@@ -99,7 +99,8 @@ export default {
 				ok: true,
 				server: "Fleet MCP Server",
 				x_posting_enabled: env.X_POSTING_ENABLED === "true",
-				mcp_auth_configured: Boolean(env.MCP_CLIENT_TOKENS),
+				mcp_auth_configured: Boolean(env.MCP_CLIENT_TOKENS || env.MCP_CLIENT_TOKENS_2),
+				mcp_auth_configured_2: Boolean(env.MCP_CLIENT_TOKENS_2),
 			});
 		}
 

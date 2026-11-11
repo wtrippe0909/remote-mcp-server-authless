@@ -48,7 +48,8 @@
 		// back on, set "true" and redeploy. The credential secrets are set
 		// with `wrangler secret put` (never in this file): X_CONSUMER_KEY,
 		// X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET,
-		// MCP_CLIENT_TOKENS.
+		// MCP_CLIENT_TOKENS, MCP_CLIENT_TOKENS_2 (second token map,
+		// 2026-11-10 — see XPostingEnv in src/x-posting.ts).
 		"X_POSTING_ENABLED": "true",
 	},
 	// Zenzap docs and raw API payloads saved for inspection (see src/research.ts).

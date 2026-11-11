@@ -100,6 +100,32 @@ test("per-client MCP auth identifies the caller and fails closed", () => {
 	assert.equal(authenticateMcpRequest(as("token-grok"), {}), null);
 });
 
+test("second token map (MCP_CLIENT_TOKENS_2) authenticates its own clients", () => {
+	const as = (token?: string) =>
+		new Request("https://example.workers.dev/mcp", {
+			headers: token ? { Authorization: `Bearer ${token}` } : {},
+		});
+	// Second map alone: its clients authenticate, first-map tokens do not.
+	const env2: XPostingEnv = {
+		MCP_CLIENT_TOKENS_2: JSON.stringify({ muse: "token-muse-2" }),
+	};
+	assert.equal(authenticateMcpRequest(as("token-muse-2"), env2), "muse");
+	assert.equal(authenticateMcpRequest(as("token-muse"), env2), null);
+	// Both maps: both sets of clients authenticate.
+	const envBoth: XPostingEnv = {
+		MCP_CLIENT_TOKENS: JSON.stringify({ grok: "token-grok" }),
+		MCP_CLIENT_TOKENS_2: JSON.stringify({ muse: "token-muse-2" }),
+	};
+	assert.equal(authenticateMcpRequest(as("token-grok"), envBoth), "grok");
+	assert.equal(authenticateMcpRequest(as("token-muse-2"), envBoth), "muse");
+	// A malformed second map is skipped, not fatal.
+	const envBad: XPostingEnv = {
+		MCP_CLIENT_TOKENS: JSON.stringify({ grok: "token-grok" }),
+		MCP_CLIENT_TOKENS_2: "not-json",
+	};
+	assert.equal(authenticateMcpRequest(as("token-grok"), envBad), "grok");
+});
+
 test("per-client auth accepts ?key= for URL-only clients (e.g. Grok)", () => {
 	const env: XPostingEnv = {
 		MCP_CLIENT_TOKENS: JSON.stringify({ muse: "token-muse", grok: "token-grok" }),

@@ -39,6 +39,16 @@ export interface XPostingEnv {
 	 * client, so a single client can be revoked without touching others.
 	 */
 	MCP_CLIENT_TOKENS?: string;
+	/**
+	 * Cloudflare secret: a SECOND token map, same JSON shape as
+	 * MCP_CLIENT_TOKENS. Added 2026-11-10 (owner directive) so a new client
+	 * token can be provisioned without reading or replacing the existing
+	 * secret — Cloudflare secrets are write-only, so the original map's
+	 * values cannot be recovered to merge into a replacement. Auth accepts
+	 * a token from either map; revoking a client = removing it from
+	 * whichever map holds it.
+	 */
+	MCP_CLIENT_TOKENS_2?: string;
 	/** Plain var (wrangler.jsonc): "true" enables publishing; anything else = draft-only. */
 	X_POSTING_ENABLED?: string;
 }
@@ -313,13 +323,22 @@ function timingSafeEqual(a: string, b: string): boolean {
  * is not configured at all, nobody is authenticated.
  */
 export function authenticateMcpRequest(request: Request, env: XPostingEnv): string | null {
-	if (!env.MCP_CLIENT_TOKENS) return null;
-	let tokens: Record<string, string>;
-	try {
-		tokens = JSON.parse(env.MCP_CLIENT_TOKENS);
-	} catch {
-		return null;
+	// Two token maps (2026-11-10): the original MCP_CLIENT_TOKENS plus
+	// MCP_CLIENT_TOKENS_2, which exists so new clients can be provisioned
+	// without replacing the write-only original secret. Fails CLOSED only
+	// when NEITHER map is configured; a map that fails to parse is skipped.
+	const tokens: Record<string, string> = {};
+	let configured = false;
+	for (const raw of [env.MCP_CLIENT_TOKENS, env.MCP_CLIENT_TOKENS_2]) {
+		if (!raw) continue;
+		configured = true;
+		try {
+			Object.assign(tokens, JSON.parse(raw));
+		} catch {
+			// skip the malformed map; the other may still authenticate
+		}
 	}
+	if (!configured || Object.keys(tokens).length === 0) return null;
 	const header = request.headers.get("Authorization") ?? "";
 	let presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
 	if (!presented) {
